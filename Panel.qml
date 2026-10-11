@@ -336,11 +336,6 @@ Panel {
     // asusd already has saved for that source.
     readonly property string defaultProfileAc: String(setting("defaultProfileAc", "Auto"))
     readonly property string defaultProfileBattery: String(setting("defaultProfileBattery", "Auto"))
-    // Screen refresh rate to apply per power source, as a string ("Auto" or a
-    // Hz value matching root.monitor.rates). Kept out of the manifest schema
-    // because the rates are per-monitor; the panel renders them dynamically.
-    readonly property string refreshAc: String(setting("refreshAc", "Auto"))
-    readonly property string refreshBattery: String(setting("refreshBattery", "Auto"))
 
     function refresh() {
         if (!asusctlAvailable) { checkAsusctl.running = true; return }
@@ -354,7 +349,13 @@ Panel {
         if (supported.hasFanCurve) { if (!fanDetailProc.running) fanDetailProc.running = true }
     }
 
-    function setProfile(p) { if (!p || actionProc.running) return; actionProc.command = Model.profileCommand(p, UPower.onBattery); actionProc.running = true }
+    // Switching mode also applies that mode's own default refresh rate.
+    function setProfile(p) {
+        if (!p || actionProc.running) return
+        actionProc.command = Model.profileCommand(p, UPower.onBattery)
+        actionProc.running = true
+        applyProfileRefresh(p)
+    }
     function cycleProfile(d) { profileIndex = Model.selectProfileIndex(profileIndex, d, profiles); setProfile(profiles[profileIndex]) }
 
     function applyEffect() {
@@ -446,32 +447,45 @@ Panel {
         else root.setLedPower(!root.ledAwake)
     }
 
-    // Per-source plans: a performance profile and a screen refresh rate, both
-    // applied when the charger changes. "Auto" leaves the current value alone.
+    // Plug/unplug only switches the power mode (its per-source default profile).
+    // The screen refresh rate belongs to the mode itself — see
+    // applyProfileRefresh — so this deliberately does not touch fps.
     function defaultProfileFor(source) { return source === "battery" ? root.defaultProfileBattery : root.defaultProfileAc }
-    function refreshFor(source) { return source === "battery" ? root.refreshBattery : root.refreshAc }
-    function applyDefaultPlan() {
+    function applyDefaultProfile() {
         if (!asusctlAvailable) return
         var prof = UPower.onBattery ? root.defaultProfileBattery : root.defaultProfileAc
         if (prof && prof !== "Auto") setProfile(prof)
-        var hz = UPower.onBattery ? root.refreshBattery : root.refreshAc
-        if (hz && hz !== "Auto" && root.monitor) setRefreshRate(Number(hz))
     }
-    // Persist a per-source plan value to shell.json through the bar settings
-    // API, so it survives restarts and is the same value the settings UI edits.
-    // When the edited source is the one currently active, apply it right away;
-    // otherwise it takes effect on the next plug/unplug.
+    // Persist a per-source mode to shell.json through the bar settings API, so it
+    // survives restarts and is the same value the settings UI edits. When the
+    // edited source is active, apply it right away; otherwise it takes effect on
+    // the next plug/unplug.
     function setDefaultProfile(source, value) {
         var key = source === "battery" ? "defaultProfileBattery" : "defaultProfileAc"
         persistProc.command = ["omarchy", "bar", "set", moduleName, key, value]
         persistProc.running = true
         if ((source === "battery") === UPower.onBattery && value !== "Auto") setProfile(value)
     }
-    function setDefaultRefresh(source, value) {
-        var key = source === "battery" ? "refreshBattery" : "refreshAc"
-        persistProc.command = ["omarchy", "bar", "set", moduleName, key, String(value)]
+
+    // Each performance mode carries its own default refresh rate, applied when
+    // the mode is switched to. Stored as refreshQuiet/refreshBalanced/
+    // refreshPerformance in shell.json.
+    function profileKeyFor(name) {
+        var n = String(name || "").toLowerCase()
+        if (n.indexOf("quiet") >= 0 || n.indexOf("silent") >= 0) return "Quiet"
+        if (n.indexOf("performance") >= 0 || n.indexOf("turbo") >= 0) return "Performance"
+        return "Balanced"
+    }
+    function profileRefreshFor(name) { return String(setting("refresh" + root.profileKeyFor(name), "Auto")) }
+    function applyProfileRefresh(name) {
+        var hz = root.profileRefreshFor(name)
+        if (hz === "Auto" || !root.monitor) return
+        setRefreshRate(Number(hz))
+    }
+    function setProfileRefresh(name, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "refresh" + root.profileKeyFor(name), String(value)]
         persistProc.running = true
-        if ((source === "battery") === UPower.onBattery && String(value) !== "Auto" && root.monitor) setRefreshRate(Number(value))
+        if (name === root.currentProfile && String(value) !== "Auto" && root.monitor) setRefreshRate(Number(value))
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -726,28 +740,42 @@ Panel {
                                         }
                                     }
                                 }
-                                Column { visible: root.monitor !== null && root.monitor.rates.length > 1; width: parent.width; spacing: Style.space(3)
-                                    Text { text: "Refresh rate"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                                    Row { id: refreshRow; width: parent.width; spacing: Style.space(4)
-                                        readonly property int n: 1 + (root.monitor ? root.monitor.rates.length : 0)
-                                        readonly property real cw: (width - spacing * (n - 1)) / Math.max(1, n)
-                                        Repeater {
-                                            model: ["Auto"].concat(root.monitor ? root.monitor.rates : [])
-                                            Button {
-                                                required property var modelData
-                                                width: refreshRow.cw
-                                                text: modelData === "Auto" ? "Auto" : modelData + " Hz"
-                                                tooltipText: modelData === "Auto"
-                                                    ? "Leave the refresh rate unchanged when " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
-                                                    : "Run at " + modelData + " Hz when " + (presetBlock.modelData.key === "battery" ? "on battery." : "plugged in.")
-                                                fontSize: Style.font.caption
-                                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                                horizontalPadding: Style.spacing.controlPaddingX
-                                                verticalPadding: Style.spacing.controlPaddingY
-                                                bordered: true
-                                                active: String(root.refreshFor(presetBlock.modelData.key)) === String(modelData)
-                                                onClicked: root.setDefaultRefresh(presetBlock.modelData.key, String(modelData))
-                                            }
+                            }
+                        }
+                    }
+
+                    // SCREEN PER MODE — each performance mode carries its own
+                    // default refresh rate, applied when the mode is switched to
+                    // (including via plug/unplug, since that just switches mode).
+                    Column { visible: root.monitor !== null && root.monitor.rates.length > 1; width: parent.width; spacing: Style.space(6)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "SCREEN PER MODE"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Repeater {
+                            model: root.profiles
+                            Column {
+                                id: modeBlock
+                                required property var modelData
+                                width: parent.width; spacing: Style.space(3)
+                                Text { text: String(modeBlock.modelData); color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                Row { id: modeRow; width: parent.width; spacing: Style.space(4)
+                                    readonly property int n: 1 + (root.monitor ? root.monitor.rates.length : 0)
+                                    readonly property real cw: (width - spacing * (n - 1)) / Math.max(1, n)
+                                    Repeater {
+                                        model: ["Auto"].concat(root.monitor ? root.monitor.rates : [])
+                                        Button {
+                                            required property var modelData
+                                            width: modeRow.cw
+                                            text: modelData === "Auto" ? "Auto" : modelData + " Hz"
+                                            tooltipText: modelData === "Auto"
+                                                ? "Leave the refresh rate unchanged when switching to " + String(modeBlock.modelData) + "."
+                                                : "Switch the screen to " + modelData + " Hz when you switch to " + String(modeBlock.modelData) + "."
+                                            fontSize: Style.font.caption
+                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                            horizontalPadding: Style.spacing.controlPaddingX
+                                            verticalPadding: Style.spacing.controlPaddingY
+                                            bordered: true
+                                            active: String(root.profileRefreshFor(modeBlock.modelData)) === String(modelData)
+                                            onClicked: root.setProfileRefresh(modeBlock.modelData, String(modelData))
                                         }
                                     }
                                 }
@@ -1177,11 +1205,12 @@ Panel {
     }
 
     IpcHandler { target: "io.github.moneytosms.asus"; function open() { root.open() } function close() { root.close() } function show() { root.open() } function hide() { root.close() } function toggle() { root.toggle() } function refresh() { root.refresh() } }
-    // Apply the configured per-source plan (profile + refresh rate) when the
-    // charger is plugged or unplugged (see applyDefaultPlan).
+    // Apply the configured per-source mode when the charger is plugged or
+    // unplugged (see applyDefaultProfile). This sets only the mode; fps comes
+    // from the mode's own default (applyProfileRefresh).
     Connections {
         target: UPower
-        function onOnBatteryChanged() { root.applyDefaultPlan() }
+        function onOnBatteryChanged() { root.applyDefaultProfile() }
     }
     onOpenedChanged: { if (opened) { Qt.callLater(refresh); cursorActive = false } }
     Component.onCompleted: { checkEcoMarker.running = true; checkHyprmoncfg.running = true; oneshotReadProc.running = true }
