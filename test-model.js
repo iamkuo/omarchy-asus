@@ -19,18 +19,15 @@ assert.deepEqual(M.profileCommand("Performance", false), ["asusctl", "profile", 
 assert.deepEqual(M.profileCommand("Quiet", true), ["asusctl", "profile", "set", "--battery", "Quiet"])
 
 // ---------------------------------------------------------------- battery
-// Plain one-shot: no percent, so asusd restores the existing limit afterwards.
-assert.deepEqual(M.batteryOneshotCommand(), ["asusctl", "battery", "oneshot"])
+assert.deepEqual(M.parseBatteryInfo("Current battery charge limit: 80%"), { limit: 80 })
 
-// asusd config: while a one-shot runs the live value is 100 and the base keeps
-// the pre-one-shot limit, which is what lets the panel detect/stop it.
-assert.deepEqual(M.parseAsusdChargeConfig("(\n    charge_control_end_threshold: 100,\n    base_charge_control_end_threshold: 80,\n)"),
-    { current: 100, base: 80 })
-assert.deepEqual(M.parseAsusdChargeConfig("(\n    charge_control_end_threshold: 80,\n    base_charge_control_end_threshold: 80,\n)"),
-    { current: 80, base: 80 })
-// The bare key must not be matched inside the base_ key (underscore, not space).
-assert.deepEqual(M.parseAsusdChargeConfig("    base_charge_control_end_threshold: 65,\n"), { current: -1, base: 65 })
-assert.deepEqual(M.parseAsusdChargeConfig(""), { current: -1, base: -1 })
+// One-shot plan: persisted as JSON and validated on read.
+assert.deepEqual(M.oneshotState('{"target":90,"restore":80}'), { target: 90, restore: 80 })
+assert.equal(M.oneshotStateJson({ target: 90, restore: 80 }), '{"target":90,"restore":80}')
+assert.equal(M.oneshotState(""), null)
+assert.equal(M.oneshotState("not json"), null)
+assert.equal(M.oneshotState('{"target":150,"restore":80}'), null)  // out of range
+assert.equal(M.oneshotState('{"target":90}'), null)                // restore missing
 
 // ---------------------------------------------------------------- armoury
 const ARMOURY = `Multiple asusd interfaces devices found

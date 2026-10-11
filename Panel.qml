@@ -197,10 +197,13 @@ Panel {
     property var supported: ({ hasAura: false, hasFanCurve: false, hasBattery: false, hasProfile: false, auraModes: [] })
     property bool fanCurveEnabled: false
     property int batteryLimit: 100
-    // asusd's saved pre-one-shot limit. When it differs from the live threshold
-    // a one-shot is running (the live value sits at 100 until unplug/shutdown).
-    property int batteryBase: -1
-    readonly property bool oneshotActive: root.batteryBase > 0 && root.batteryBase !== root.batteryLimit
+    // "Charge to <target>% once" plan: the limit is temporarily set to target
+    // and restored to `restore` (the limit in effect at the time) once the
+    // battery reaches it. Persisted so a shell restart does not lose it.
+    property var oneshotPlan: null
+    property int oneshotTarget: 100
+    readonly property bool oneshotActive: root.oneshotPlan !== null
+    readonly property string oneshotStateFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omarchy-asus-oneshot.json"
     property bool asusctlAvailable: false
     property bool cursorActive: false
 
@@ -344,7 +347,6 @@ Panel {
         if (!profileProc.running) profileProc.running = true
         if (!infoProc.running) infoProc.running = true
         if (supported.hasBattery && !batteryProc.running) batteryProc.running = true
-        if (supported.hasBattery && !oneshotStateProc.running) oneshotStateProc.running = true
         if (!ledProc.running) ledProc.running = true
         if (!armouryProc.running) armouryProc.running = true
         if (!monitorProc.running) monitorProc.running = true
@@ -383,11 +385,33 @@ Panel {
     function setLedSleep(on) { ledSleep = on; applyLedPower() }
     function setLedBrightness(level) { ledBrightness = level; actionProc.command = ["asusctl", "leds", "set", level]; actionProc.running = true }
     function setBatteryLimit(l) { if (!supported.hasBattery) return; var c = Math.max(20, Math.min(100, Math.round(l))); actionProc.command = ["asusctl", "battery", "limit", String(c)]; actionProc.running = true }
-    // One-shot charge: charges to full once, ignoring the limit. asusd restores
-    // the saved limit on the next unplug or shutdown (see the panel tooltip).
-    function oneshotCharge() { if (!supported.hasBattery) return; actionProc.command = Model.batteryOneshotCommand(); actionProc.running = true }
-    // Cancel a running one-shot by writing the saved limit back to the firmware.
-    function stopOneshot() { if (root.batteryBase > 0) setBatteryLimit(root.batteryBase) }
+    // Charge to a target once: set the limit to it, remember the limit to
+    // restore, and let the sensor tick restore it when the battery arrives.
+    function startOneshot(target) {
+        if (!supported.hasBattery) return
+        var t = Math.max(20, Math.min(100, Math.round(target)))
+        root.oneshotPlan = { target: t, restore: Math.max(20, Math.min(100, Math.round(root.batteryLimit || t))) }
+        persistOneshotState()
+        setBatteryLimit(t)
+    }
+    // Cancel a running one-shot and put the saved limit straight back. Bail out
+    // (keeping the plan) if asusctl support hasn't loaded yet — the sensor tick
+    // can fire before `supported` is populated, and clearing the plan then would
+    // silently drop the restore.
+    function stopOneshot() {
+        if (!root.oneshotPlan || !supported.hasBattery) return
+        var r = root.oneshotPlan.restore
+        root.oneshotPlan = null
+        persistOneshotState()
+        setBatteryLimit(r)
+    }
+    function persistOneshotState() {
+        if (root.oneshotPlan)
+            oneshotWriteProc.command = ["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1"', "sh", root.oneshotStateFile, Model.oneshotStateJson(root.oneshotPlan)]
+        else
+            oneshotWriteProc.command = ["rm", "-f", root.oneshotStateFile]
+        oneshotWriteProc.running = true
+    }
 
     // Per-zone aura power. Each zone's state is tracked locally (asusctl cannot
     // read it back) and the whole set is resent on every change, since the
@@ -801,19 +825,18 @@ Panel {
                                 Button { required property var modelData; width: (parent.width - Style.space(4) * 4) / 5; text: modelData + "%"; tooltipText: modelData === 100 ? "Charge to full.\nConvenient, but hardest on long-term battery health." : "Stop charging at " + modelData + "%.\nLower limits slow battery wear; 60–80% suits a mostly plugged-in laptop."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; active: root.batteryLimit === modelData; onClicked: root.setBatteryLimit(modelData) }
                             }
                         }
-                        // One-shot: charge to full once, ignoring the limit above.
-                        // asusd restores the saved limit on the next unplug or
-                        // shutdown, so this does not change your limit.
+                        // One-shot: charge to a chosen level once. asusd's own
+                        // one-shot only ever charges to 100%, so the panel sets
+                        // the limit to the target and restores the limit above as
+                        // soon as the battery arrives.
                         Row { width: parent.width; spacing: Style.space(4)
                             Text { text: "One-shot"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(52); anchors.verticalCenter: parent.verticalCenter
                                 MouseArea { id: oneshotHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-                                PanelToolTip { visible: oneshotHelp.containsMouse; text: "Charge to full once, ignoring the limit above.\nYour limit is restored when you unplug the charger\nor shut down.\n(asusctl battery oneshot)" }
+                                PanelToolTip { visible: oneshotHelp.containsMouse; text: "Charge to the target once, then restore the limit above.\nWhile it runs, charging is capped at the target\nand the button becomes Stop." }
                             }
-                            Button { visible: !root.oneshotActive; id: oneshotBtn; width: parent.width - Style.space(52) - Style.space(4); text: "Charge to full once"; tooltipText: "Charge to 100% once, then keep the limit above."; leftAlign: true; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.oneshotCharge() }
-                            // Same slot as the button above, shown only while a
-                            // one-shot is running. Stops it by restoring the limit
-                            // asusd saved before the one-shot.
-                            Button { visible: root.oneshotActive; id: stopOneshotBtn; width: parent.width - Style.space(52) - Style.space(4); text: "Stop one-shot"; tooltipText: "Cancel the one-shot and put the limit back to " + root.batteryBase + "%."; leftAlign: true; fontSize: Style.font.caption; foreground: "#ff8844"; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.stopOneshot() }
+                            PanelSlider { width: parent.width - Style.space(52) - Style.space(34) - Style.space(56) - Style.space(4) * 3; bar: root.bar; minimum: 20; maximum: 100; step: 5; integer: true; value: root.oneshotTarget; onReleased: function(v) { root.oneshotTarget = Math.round(v) } }
+                            Text { text: root.oneshotTarget + "%"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(34); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                            Button { id: oneshotBtn; width: Style.space(56); text: root.oneshotActive ? "Stop" : "Charge"; tooltipText: root.oneshotActive ? "Stop the one-shot and put the limit back to " + root.oneshotPlan.restore + "%." : "Charge to " + root.oneshotTarget + "% once, then restore the limit above."; fontSize: Style.font.caption; foreground: root.oneshotActive ? "#ff8844" : root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.oneshotActive ? root.stopOneshot() : root.startOneshot(root.oneshotTarget) }
                         }
                     }
                 }
@@ -1161,7 +1184,7 @@ Panel {
         function onOnBatteryChanged() { root.applyDefaultPlan() }
     }
     onOpenedChanged: { if (opened) { Qt.callLater(refresh); cursorActive = false } }
-    Component.onCompleted: { checkEcoMarker.running = true; checkHyprmoncfg.running = true }
+    Component.onCompleted: { checkEcoMarker.running = true; checkHyprmoncfg.running = true; oneshotReadProc.running = true }
 
     // Marker must be read before the first armoury refresh, so it gates checkAsusctl.
     Process { id: checkEcoMarker; command: ["test", "-f", root.ecoMarker]; onExited: function(ec) { root.ecoPending = ec === 0; checkAsusctl.running = true } }
@@ -1172,9 +1195,10 @@ Panel {
     Process { id: profileProc; command: ["asusctl", "profile", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { var p = Model.parseCurrentProfile(text); if (p) { root.currentProfile = p; var i = root.profiles.indexOf(p); if (i >= 0) root.profileIndex = i }; root.acProfile = Model.parseProfiles(text); root.profileLoaded = true } } }
     Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.initAuraPowerState(root.supported.auraPowerZones || []); root.infoLoaded = true } } }
     Process { id: batteryProc; command: ["asusctl", "battery", "info"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.batteryLimit = Model.parseBatteryInfo(text).limit } } }
-    // Reads asusd's saved limit so the panel can tell a running one-shot from a
-    // normal limit (see oneshotActive) and restore it on Stop.
-    Process { id: oneshotStateProc; command: ["cat", "/etc/asusd/asusd.ron"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.batteryBase = Model.parseAsusdChargeConfig(text).base } } }
+    // Persisted one-shot plan, read once at startup so a pending "charge to X"
+    // survives a shell restart or reboot.
+    Process { id: oneshotReadProc; command: ["cat", root.oneshotStateFile]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.oneshotPlan = Model.oneshotState(text) } } }
+    Process { id: oneshotWriteProc }
     Process { id: ledProc; command: ["asusctl", "leds", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.ledBrightness = Model.parseLedBrightness(text) } } }
     Process {
         id: fanDetailProc
@@ -1258,8 +1282,8 @@ Panel {
         }
     }
     Process { id: hyprmoncfgSaveProc; onExited: function() { if (!monitorProc.running) monitorProc.running = true } }
-    Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text) } } }
-    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!oneshotStateProc.running) oneshotStateProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
+    Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text); if (root.oneshotPlan && root.sensors.batPct >= root.oneshotPlan.target) root.stopOneshot() } } }
+    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
 
     // Sensors run on their own, faster tick — the asusctl round-trip is much

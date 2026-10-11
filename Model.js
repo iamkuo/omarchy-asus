@@ -205,29 +205,21 @@ function parseBatteryInfo(raw) {
     return r
 }
 
-// One-shot full charge: charges to 100% once, ignoring the charge limit, then
-// asusd restores the saved limit on the next unplug or shutdown. No percent is
-// passed — passing one would overwrite the limit that gets restored.
-function batteryOneshotCommand() {
-    return ["asusctl", "battery", "oneshot"]
+// asusctl's one-shot always charges to 100% (its percent argument only sets the
+// limit to restore afterwards), so charging to an arbitrary level once is done
+// by the panel: the charge limit is temporarily set to the target and restored
+// once the battery reaches it. This state is persisted so a shell restart (or a
+// reboot) does not lose the pending restore.
+function oneshotState(raw) {
+    var d
+    try { d = JSON.parse(String(raw || "")) } catch (e) { return null }
+    if (!d || typeof d.target !== "number" || typeof d.restore !== "number") return null
+    if (d.target < 20 || d.target > 100 || d.restore < 20 || d.restore > 100) return null
+    return { target: Math.round(d.target), restore: Math.round(d.restore) }
 }
 
-// asusd keeps the pre-one-shot limit in `base_charge_control_end_threshold`
-// while a one-shot is running, and the live threshold becomes 100. Reading the
-// daemon's config is what lets the panel tell "one-shot active" (base != live)
-// apart from a normal limit, and know what to restore on Stop. asusctl exposes
-// no property for the base value.
-function parseAsusdChargeConfig(raw) {
-    var text = String(raw || "")
-    var r = { current: -1, base: -1 }
-    // The leading whitespace/start anchor keeps this from also matching the
-    // `base_charge_control_end_threshold` line (the char before "charge" there
-    // is an underscore, not whitespace).
-    var c = text.match(/(^|\s)charge_control_end_threshold:\s*(\d+)/)
-    var b = text.match(/base_charge_control_end_threshold:\s*(\d+)/)
-    if (c) r.current = parseInt(c[2])
-    if (b) r.base = parseInt(b[1])
-    return r
+function oneshotStateJson(plan) {
+    return JSON.stringify({ target: Math.round(plan.target), restore: Math.round(plan.restore) })
 }
 
 // ============================================================
