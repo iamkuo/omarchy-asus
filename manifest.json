@@ -24,7 +24,9 @@
       "showBatteryLimit": true,
       "refreshIntervalSec": 10,
       "defaultProfileAc": "Auto",
-      "defaultProfileBattery": "Auto"
+      "defaultProfileBattery": "Auto",
+      "refreshAc": "Auto",
+      "refreshBattery": "Auto"
     },
     "schema": [
       {

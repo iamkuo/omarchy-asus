@@ -77,11 +77,14 @@ when the charger is connected or disconnected. Scrolling the bar icon uses
 the same behavior.
 
 If you would rather pin the profile yourself, use the **Auto-switch on power**
-section on the Main tab: choose a profile for "Plugged in" and one for "On
-battery", and the panel applies it when the charger changes. These are stored
-as the `defaultProfileAc` and `defaultProfileBattery` plugin settings
-(`Auto`, `Quiet`, `Balanced`, `Performance`), so they also appear wherever
-those settings are edited. `Auto` leaves the choice to asusd.
+section on the Main tab: choose a performance profile and a screen refresh
+rate for "Plugged in" and for "On battery", and the panel applies them when
+the charger changes — e.g. Performance at 144 Hz while plugged, Quiet at 60 Hz
+on battery. The profile choices are stored as the `defaultProfileAc` and
+`defaultProfileBattery` plugin settings (`Auto`, `Quiet`, `Balanced`,
+`Performance`); the refresh choices as `refreshAc` and `refreshBattery`
+(`Auto` or one of the Hz values the internal panel offers). `Auto` leaves the
+current value alone.
 
 ### Screen refresh rate
 
@@ -155,6 +158,8 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 | `refreshIntervalSec` | integer | `10` | Poll interval while the panel is open (5–60s) |
 | `defaultProfileAc` | enum | `Auto` | Profile to apply automatically when AC power is connected (`Auto`, `Quiet`, `Balanced`, `Performance`). `Auto` leaves asusd's saved AC profile in charge |
 | `defaultProfileBattery` | enum | `Auto` | Profile to apply automatically when the charger is unplugged. `Auto` leaves asusd's saved battery profile in charge |
+| `refreshAc` | string | `Auto` | Screen refresh rate to apply when AC power is connected (`Auto`, or a Hz value the internal panel offers) |
+| `refreshBattery` | string | `Auto` | Screen refresh rate to apply on battery |
 
 ## Compatibility
 

@@ -331,6 +331,11 @@ Panel {
     // asusd already has saved for that source.
     readonly property string defaultProfileAc: String(setting("defaultProfileAc", "Auto"))
     readonly property string defaultProfileBattery: String(setting("defaultProfileBattery", "Auto"))
+    // Screen refresh rate to apply per power source, as a string ("Auto" or a
+    // Hz value matching root.monitor.rates). Kept out of the manifest schema
+    // because the rates are per-monitor; the panel renders them dynamically.
+    readonly property string refreshAc: String(setting("refreshAc", "Auto"))
+    readonly property string refreshBattery: String(setting("refreshBattery", "Auto"))
 
     function refresh() {
         if (!asusctlAvailable) { checkAsusctl.running = true; return }
@@ -411,25 +416,32 @@ Panel {
         else root.setLedPower(!root.ledAwake)
     }
 
-    // Optional plugin-side defaults: apply the user's chosen profile for the
-    // power source that just became active. "Auto" does nothing, leaving the
-    // per-source profile asusd has saved in charge.
+    // Per-source plans: a performance profile and a screen refresh rate, both
+    // applied when the charger changes. "Auto" leaves the current value alone.
     function defaultProfileFor(source) { return source === "battery" ? root.defaultProfileBattery : root.defaultProfileAc }
-    function applyDefaultProfile() {
+    function refreshFor(source) { return source === "battery" ? root.refreshBattery : root.refreshAc }
+    function applyDefaultPlan() {
         if (!asusctlAvailable) return
-        var p = UPower.onBattery ? root.defaultProfileBattery : root.defaultProfileAc
-        if (!p || p === "Auto") return
-        setProfile(p)
+        var prof = UPower.onBattery ? root.defaultProfileBattery : root.defaultProfileAc
+        if (prof && prof !== "Auto") setProfile(prof)
+        var hz = UPower.onBattery ? root.refreshBattery : root.refreshAc
+        if (hz && hz !== "Auto" && root.monitor) setRefreshRate(Number(hz))
     }
-    // Persist a per-source preset to shell.json through the bar settings API,
-    // so it survives restarts and is the same value the settings UI edits. When
-    // the edited source is the one currently active, apply it right away;
+    // Persist a per-source plan value to shell.json through the bar settings
+    // API, so it survives restarts and is the same value the settings UI edits.
+    // When the edited source is the one currently active, apply it right away;
     // otherwise it takes effect on the next plug/unplug.
     function setDefaultProfile(source, value) {
         var key = source === "battery" ? "defaultProfileBattery" : "defaultProfileAc"
         persistProc.command = ["omarchy", "bar", "set", moduleName, key, value]
         persistProc.running = true
         if ((source === "battery") === UPower.onBattery && value !== "Auto") setProfile(value)
+    }
+    function setDefaultRefresh(source, value) {
+        var key = source === "battery" ? "refreshBattery" : "refreshAc"
+        persistProc.command = ["omarchy", "bar", "set", moduleName, key, String(value)]
+        persistProc.running = true
+        if ((source === "battery") === UPower.onBattery && String(value) !== "Auto" && root.monitor) setRefreshRate(Number(value))
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -681,6 +693,31 @@ Panel {
                                             bordered: true
                                             active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
                                             onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
+                                        }
+                                    }
+                                }
+                                Column { visible: root.monitor !== null && root.monitor.rates.length > 1; width: parent.width; spacing: Style.space(3)
+                                    Text { text: "Refresh rate"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                    Row { id: refreshRow; width: parent.width; spacing: Style.space(4)
+                                        readonly property int n: 1 + (root.monitor ? root.monitor.rates.length : 0)
+                                        readonly property real cw: (width - spacing * (n - 1)) / Math.max(1, n)
+                                        Repeater {
+                                            model: ["Auto"].concat(root.monitor ? root.monitor.rates : [])
+                                            Button {
+                                                required property var modelData
+                                                width: refreshRow.cw
+                                                text: modelData === "Auto" ? "Auto" : modelData + " Hz"
+                                                tooltipText: modelData === "Auto"
+                                                    ? "Leave the refresh rate unchanged when " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
+                                                    : "Run at " + modelData + " Hz when " + (presetBlock.modelData.key === "battery" ? "on battery." : "plugged in.")
+                                                fontSize: Style.font.caption
+                                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                                horizontalPadding: Style.spacing.controlPaddingX
+                                                verticalPadding: Style.spacing.controlPaddingY
+                                                bordered: true
+                                                active: String(root.refreshFor(presetBlock.modelData.key)) === String(modelData)
+                                                onClicked: root.setDefaultRefresh(presetBlock.modelData.key, String(modelData))
+                                            }
                                         }
                                     }
                                 }
@@ -1108,11 +1145,11 @@ Panel {
     }
 
     IpcHandler { target: "io.github.moneytosms.asus"; function open() { root.open() } function close() { root.close() } function show() { root.open() } function hide() { root.close() } function toggle() { root.toggle() } function refresh() { root.refresh() } }
-    // Apply the configured per-source default profile when the charger is
-    // plugged or unplugged (see applyDefaultProfile).
+    // Apply the configured per-source plan (profile + refresh rate) when the
+    // charger is plugged or unplugged (see applyDefaultPlan).
     Connections {
         target: UPower
-        function onOnBatteryChanged() { root.applyDefaultProfile() }
+        function onOnBatteryChanged() { root.applyDefaultPlan() }
     }
     onOpenedChanged: { if (opened) { Qt.callLater(refresh); cursorActive = false } }
     Component.onCompleted: { checkEcoMarker.running = true; checkHyprmoncfg.running = true }
