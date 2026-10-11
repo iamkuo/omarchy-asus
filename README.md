@@ -32,8 +32,10 @@ that.
 - **Main** — performance mode (Quiet/Balanced/Performance, tinted by mode),
   saved separately for AC and battery, plus GPU mode (Eco/Standard/Ultimate),
   screen refresh rate and panel overdrive,
-  battery charge limit, and a one-shot charge that tops the battery up past
-  the limit once (handy before unplugging).
+  battery charge limit, and a one-shot charge that tops the battery up to full
+  once — asusd restores your saved limit when you unplug the charger or shut
+  down, so the one-shot does not change the limit. While a one-shot is running
+  the button becomes **Stop one-shot**, which restores the limit immediately.
 - **RGB** — keyboard lighting, filtered to the aura effects your laptop
   actually reports (`asusctl info --show-supported`), not a fixed list of
   twelve, plus brightness and the awake/boot/sleep power states. On 2021+

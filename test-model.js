@@ -19,9 +19,18 @@ assert.deepEqual(M.profileCommand("Performance", false), ["asusctl", "profile", 
 assert.deepEqual(M.profileCommand("Quiet", true), ["asusctl", "profile", "set", "--battery", "Quiet"])
 
 // ---------------------------------------------------------------- battery
-assert.deepEqual(M.batteryOneshotCommand(90), ["asusctl", "battery", "oneshot", "90"])
-// Clamped to asusctl's accepted 20-100 range.
-assert.deepEqual(M.batteryOneshotCommand(5), ["asusctl", "battery", "oneshot", "20"])
+// Plain one-shot: no percent, so asusd restores the existing limit afterwards.
+assert.deepEqual(M.batteryOneshotCommand(), ["asusctl", "battery", "oneshot"])
+
+// asusd config: while a one-shot runs the live value is 100 and the base keeps
+// the pre-one-shot limit, which is what lets the panel detect/stop it.
+assert.deepEqual(M.parseAsusdChargeConfig("(\n    charge_control_end_threshold: 100,\n    base_charge_control_end_threshold: 80,\n)"),
+    { current: 100, base: 80 })
+assert.deepEqual(M.parseAsusdChargeConfig("(\n    charge_control_end_threshold: 80,\n    base_charge_control_end_threshold: 80,\n)"),
+    { current: 80, base: 80 })
+// The bare key must not be matched inside the base_ key (underscore, not space).
+assert.deepEqual(M.parseAsusdChargeConfig("    base_charge_control_end_threshold: 65,\n"), { current: -1, base: 65 })
+assert.deepEqual(M.parseAsusdChargeConfig(""), { current: -1, base: -1 })
 
 // ---------------------------------------------------------------- armoury
 const ARMOURY = `Multiple asusd interfaces devices found

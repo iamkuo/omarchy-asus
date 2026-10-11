@@ -205,10 +205,29 @@ function parseBatteryInfo(raw) {
     return r
 }
 
-// One-shot full charge ignores the charge limit and tops the battery up to the
-// target once (asusctl defaults it to 100 when no percent is given).
-function batteryOneshotCommand(percent) {
-    return ["asusctl", "battery", "oneshot", String(clamp(Math.round(percent), 20, 100))]
+// One-shot full charge: charges to 100% once, ignoring the charge limit, then
+// asusd restores the saved limit on the next unplug or shutdown. No percent is
+// passed — passing one would overwrite the limit that gets restored.
+function batteryOneshotCommand() {
+    return ["asusctl", "battery", "oneshot"]
+}
+
+// asusd keeps the pre-one-shot limit in `base_charge_control_end_threshold`
+// while a one-shot is running, and the live threshold becomes 100. Reading the
+// daemon's config is what lets the panel tell "one-shot active" (base != live)
+// apart from a normal limit, and know what to restore on Stop. asusctl exposes
+// no property for the base value.
+function parseAsusdChargeConfig(raw) {
+    var text = String(raw || "")
+    var r = { current: -1, base: -1 }
+    // The leading whitespace/start anchor keeps this from also matching the
+    // `base_charge_control_end_threshold` line (the char before "charge" there
+    // is an underscore, not whitespace).
+    var c = text.match(/(^|\s)charge_control_end_threshold:\s*(\d+)/)
+    var b = text.match(/base_charge_control_end_threshold:\s*(\d+)/)
+    if (c) r.current = parseInt(c[2])
+    if (b) r.base = parseInt(b[1])
+    return r
 }
 
 // ============================================================
