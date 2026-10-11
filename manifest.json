@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "io.github.moneytosms.asus",
   "name": "ASUS",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "moneytosms",
   "license": "MIT",
   "homepage": "https://github.com/moneytosms/omarchy-asus",
-  "description": "G-Helper-style ASUS laptop control — live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, editable fan curves, and firmware power limits — from the Omarchy bar",
+  "description": "G-Helper-style ASUS laptop control — live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, editable fan curves, firmware power limits, and per-zone aura power — from the Omarchy bar",
   "kinds": [
     "bar-widget"
   ],
@@ -22,7 +22,9 @@
     "defaultSection": "right",
     "defaults": {
       "showBatteryLimit": true,
-      "refreshIntervalSec": 10
+      "refreshIntervalSec": 10,
+      "defaultProfileAc": "Auto",
+      "defaultProfileBattery": "Auto"
     },
     "schema": [
       {
@@ -39,6 +41,22 @@
         "max": 60,
         "step": 5,
         "defaultValue": 10
+      },
+      {
+        "key": "defaultProfileAc",
+        "type": "enum",
+        "label": "Default profile when plugged in",
+        "options": ["Auto", "Quiet", "Balanced", "Performance"],
+        "defaultValue": "Auto",
+        "description": "Profile applied automatically when AC power is connected. Auto leaves asusd's saved AC profile in charge."
+      },
+      {
+        "key": "defaultProfileBattery",
+        "type": "enum",
+        "label": "Default profile on battery",
+        "options": ["Auto", "Quiet", "Balanced", "Performance"],
+        "defaultValue": "Auto",
+        "description": "Profile applied automatically when the charger is unplugged. Auto leaves asusd's saved battery profile in charge."
       }
     ]
   }

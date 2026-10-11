@@ -32,19 +32,26 @@ that.
 - **Main** — performance mode (Quiet/Balanced/Performance, tinted by mode),
   saved separately for AC and battery, plus GPU mode (Eco/Standard/Ultimate),
   screen refresh rate and panel overdrive,
-  battery charge limit.
+  battery charge limit, and a one-shot charge that tops the battery up past
+  the limit once (handy before unplugging).
 - **RGB** — keyboard lighting, filtered to the aura effects your laptop
   actually reports (`asusctl info --show-supported`), not a fixed list of
-  twelve, plus brightness and the awake/boot/sleep power states.
+  twelve, plus brightness and the awake/boot/sleep power states. On 2021+
+  keyboards the power states come from the newer per-zone
+  `asusctl aura power <zone>` API, adding a shutdown state and covering every
+  zone the laptop reports (logo, lightbar, lid, rear glow); zones your model
+  does not have never appear.
 - **Fan** — a master "Custom Fan Curves" switch, a per-profile curve editor
   (curves are stored per power profile, so you pick which profile you are
   tuning), draggable curves per fan (CPU/GPU, plus Mid on laptops with a third
   fan) with the live RPM and temperature for that fan alongside, and a
   one-click reset.
-- **Advanced** — firmware power limits (PL1/PL2, GPU dynamic boost, GPU temp
-  target) with ranges read from the firmware and a "Defaults" button that
-  replays the values `asusctl` reports as default. Each control appears only
-  if `asusctl armoury list` says your laptop exposes it.
+- **Advanced** — firmware power limits (PL1/PL2/PL3-FPPT, GPU dynamic boost,
+  GPU temp target) with ranges read from the firmware and a "Defaults" button
+  that replays the values `asusctl` reports as default. Each control appears
+  only if `asusctl armoury list` says your laptop exposes it. A "Profile
+  tuning" switch gates whether those limits are actually applied — asusctl
+  stores them but leaves them inert while tuning is off.
 - **Bar icon** — scroll over it to cycle performance modes without opening the
   panel.
 
@@ -68,6 +75,11 @@ power source using `asusctl profile set --ac` or `--battery`. The other
 power source keeps its saved choice. `asusd` handles applying these profiles
 when the charger is connected or disconnected. Scrolling the bar icon uses
 the same behavior.
+
+If you would rather pin the profile yourself, set `defaultProfileAc` and
+`defaultProfileBattery` in the plugin settings: when the charger is plugged or
+unplugged the panel applies the chosen profile for that source. Both default
+to `Auto`, which leaves the choice to asusd.
 
 ### Screen refresh rate
 
@@ -139,6 +151,8 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 |-----|------|---------|-------------|
 | `showBatteryLimit` | boolean | `true` | Show the battery charge limit section on Main |
 | `refreshIntervalSec` | integer | `10` | Poll interval while the panel is open (5–60s) |
+| `defaultProfileAc` | enum | `Auto` | Profile to apply automatically when AC power is connected (`Auto`, `Quiet`, `Balanced`, `Performance`). `Auto` leaves asusd's saved AC profile in charge |
+| `defaultProfileBattery` | enum | `Auto` | Profile to apply automatically when the charger is unplugged. `Auto` leaves asusd's saved battery profile in charge |
 
 ## Compatibility
 

@@ -247,6 +247,11 @@ Panel {
     property bool ledBoot: true
     property bool ledSleep: true
     property string ledBrightness: "med"
+    // Per-zone aura power (the 2021+ `asusctl aura power <zone>` API). Only the
+    // zones the laptop reports are shown. asusctl does not report the states
+    // back, so the panel tracks what it last set, like the legacy toggles.
+    property var auraPowerZones: []
+    property var auraPowerState: ({})
     readonly property string colorHex: Model.rgbToHex(colorR, colorG, colorB)
     readonly property string color2Hex: Model.rgbToHex(color2R, color2G, color2B)
     readonly property color liveColor: Qt.rgba(colorR / 255, colorG / 255, colorB / 255, 1)
@@ -276,8 +281,13 @@ Panel {
     // Armoury — armourySupported gates each Advanced control per-model, since
     // `asusctl armoury list` only reports attributes the running laptop
     // actually exposes (no dGPU / no panel overdrive on some models).
-    property var armourySupported: ({ panelOverdrive: false, gpuMux: false, dgpuDisable: false, pptPl1: false, pptPl2: false, nvDynBoost: false, nvTempTarget: false })
+    property var armourySupported: ({ panelOverdrive: false, gpuMux: false, dgpuDisable: false, pptPl1: false, pptPl2: false, pptPl3: false, nvDynBoost: false, nvTempTarget: false })
     property var armouryDefaults: ({})
+    // Profile tuning gates whether the PPT limits above are actually applied to
+    // the hardware — they are stored but inert while it is off.
+    property bool profileTuning: false
+    // Battery one-shot charge target (asusctl battery oneshot <percent>).
+    property int oneshotPct: 100
     property bool panelOverdrive: false
     property bool gpuMux: false // true = MUX on dGPU (Ultimate)
     property bool dgpuDisable: false
@@ -296,6 +306,9 @@ Panel {
     property int pptPl2: 135
     property int pptPl2Min: 35
     property int pptPl2Max: 60
+    property int pptPl3: 65
+    property int pptPl3Min: 35
+    property int pptPl3Max: 80
     property int nvDynBoost: 25
     property int nvDynBoostMin: 0
     property int nvDynBoostMax: 25
@@ -316,6 +329,11 @@ Panel {
 
     readonly property bool showBatteryLimit: setting("showBatteryLimit", true) === true
     readonly property int refreshInterval: Math.max(5, Math.min(60, Number(setting("refreshIntervalSec", 10)) || 10)) * 1000
+    // Optional plugin-side default profile per power source, applied when the
+    // charger is plugged or unplugged. "Auto" leaves the choice to the profile
+    // asusd already has saved for that source.
+    readonly property string defaultProfileAc: String(setting("defaultProfileAc", "Auto"))
+    readonly property string defaultProfileBattery: String(setting("defaultProfileBattery", "Auto"))
 
     function refresh() {
         if (!asusctlAvailable) { checkAsusctl.running = true; return }
@@ -326,6 +344,7 @@ Panel {
         if (!armouryProc.running) armouryProc.running = true
         if (!monitorProc.running) monitorProc.running = true
         if (hyprmoncfgAvailable && !hyprmoncfgProc.running) hyprmoncfgProc.running = true
+        if (supported.hasProfile && !tuningProc.running) tuningProc.running = true
         if (supported.hasFanCurve) { if (!fanDetailProc.running) fanDetailProc.running = true }
     }
 
@@ -360,6 +379,51 @@ Panel {
     function setLedSleep(on) { ledSleep = on; applyLedPower() }
     function setLedBrightness(level) { ledBrightness = level; actionProc.command = ["asusctl", "leds", "set", level]; actionProc.running = true }
     function setBatteryLimit(l) { if (!supported.hasBattery) return; var c = Math.max(20, Math.min(100, Math.round(l))); actionProc.command = ["asusctl", "battery", "limit", String(c)]; actionProc.running = true }
+    // One-shot top-up: ignores the charge limit and charges to the target once.
+    function oneshotCharge(pct) { if (!supported.hasBattery) return; actionProc.command = Model.batteryOneshotCommand(pct); actionProc.running = true }
+
+    // Per-zone aura power. Each zone's state is tracked locally (asusctl cannot
+    // read it back) and the whole set is resent on every change, since the
+    // omitted switches are what asusctl reads as "disabled".
+    function auraPowerOn(zone, state) { var s = root.auraPowerState[zone]; return !!(s && s[state]) }
+    function setAuraPower(zone, state, on) {
+        var cur = root.auraPowerState[zone] || {}
+        var next = { awake: !!cur.awake, boot: !!cur.boot, sleep: !!cur.sleep, shutdown: !!cur.shutdown }
+        next[state] = on
+        var all = {}
+        for (var k in root.auraPowerState) all[k] = root.auraPowerState[k]
+        all[zone] = next
+        root.auraPowerState = all
+        actionProc.command = Model.buildAuraPowerCommand(zone, next)
+        actionProc.running = true
+    }
+    function initAuraPowerState(zones) {
+        if (root.auraPowerZones.length > 0) { root.auraPowerZones = zones; return }
+        var st = {}
+        for (var i = 0; i < zones.length; i++) st[zones[i]] = { awake: true, boot: true, sleep: true, shutdown: false }
+        root.auraPowerState = st
+        root.auraPowerZones = zones
+    }
+
+    // The RGB header's on/off pill tracks the keyboard's "awake" power state.
+    // On the newer zone API that lives in auraPowerState; on old models it is
+    // the power-tuf flag, so both paths route through these helpers.
+    readonly property bool hasKeyboardZone: root.auraPowerZones.indexOf("keyboard") >= 0
+    readonly property bool keyboardLit: root.hasKeyboardZone ? root.auraPowerOn("keyboard", "awake") : root.ledAwake
+    function toggleKeyboardPower() {
+        if (root.hasKeyboardZone) root.setAuraPower("keyboard", "awake", !root.auraPowerOn("keyboard", "awake"))
+        else root.setLedPower(!root.ledAwake)
+    }
+
+    // Optional plugin-side defaults: apply the user's chosen profile for the
+    // power source that just became active. "Auto" does nothing, leaving the
+    // per-source profile asusd has saved in charge.
+    function applyDefaultProfile() {
+        if (!asusctlAvailable) return
+        var p = UPower.onBattery ? root.defaultProfileBattery : root.defaultProfileAc
+        if (!p || p === "Auto") return
+        setProfile(p)
+    }
 
     // Fan curves — every write is gated on profileLoaded so an action never
     // silently lands on the wrong (hardcoded "Balanced") profile because the
@@ -381,14 +445,24 @@ Panel {
     function togglePanelOverdrive() { panelOverdrive = !panelOverdrive; setArmouryAttr("panel_overdrive", panelOverdrive ? 1 : 0) }
     function setPptPl1(v) { pptPl1 = Math.round(v); setArmouryAttr("ppt_pl1_spl", pptPl1) }
     function setPptPl2(v) { pptPl2 = Math.round(v); setArmouryAttr("ppt_pl2_sppt", pptPl2) }
+    function setPptPl3(v) { pptPl3 = Math.round(v); setArmouryAttr("ppt_pl3_fppt", pptPl3) }
     function setNvDynBoost(v) { nvDynBoost = Math.round(v); setArmouryAttr("nv_dynamic_boost", nvDynBoost) }
     function setNvTempTarget(v) { nvTempTarget = Math.round(v); setArmouryAttr("nv_temp_target", nvTempTarget) }
+    // Profile tuning gates whether the PPT limits are applied at all; the
+    // firmware stores them either way. asusctl accepts true/false and prints
+    // the current state when called with no argument.
+    function setProfileTuning(on) {
+        profileTuning = on
+        actionProc.command = Model.tuningCommand(on)
+        actionProc.running = true
+    }
     // Firmware ships a sane default per attribute; `asusctl armoury list`
     // reports it, so "Defaults" is just replaying those values.
     function restorePowerDefaults() {
         var d = root.armouryDefaults
         if (d.ppt_pl1_spl !== undefined) setPptPl1(d.ppt_pl1_spl)
         if (d.ppt_pl2_sppt !== undefined) setPptPl2(d.ppt_pl2_sppt)
+        if (d.ppt_pl3_fppt !== undefined) setPptPl3(d.ppt_pl3_fppt)
         if (d.nv_dynamic_boost !== undefined) setNvDynBoost(d.nv_dynamic_boost)
         if (d.nv_temp_target !== undefined) setNvTempTarget(d.nv_temp_target)
     }
@@ -647,6 +721,17 @@ Panel {
                                 Button { required property var modelData; width: (parent.width - Style.space(4) * 4) / 5; text: modelData + "%"; tooltipText: modelData === 100 ? "Charge to full.\nConvenient, but hardest on long-term battery health." : "Stop charging at " + modelData + "%.\nLower limits slow battery wear; 60–80% suits a mostly plugged-in laptop."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; active: root.batteryLimit === modelData; onClicked: root.setBatteryLimit(modelData) }
                             }
                         }
+                        // One-shot top-up: charges past the limit once, then the
+                        // limit resumes. Handy before unplugging for a trip.
+                        Row { width: parent.width; spacing: Style.space(4)
+                            Text { text: "One-shot"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(52); anchors.verticalCenter: parent.verticalCenter
+                                MouseArea { id: oneshotHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                                PanelToolTip { visible: oneshotHelp.containsMouse; text: "Charge to the target once, ignoring the limit above.\nThe normal limit resumes afterwards.\n(asusctl battery oneshot <percent>)" }
+                            }
+                            PanelSlider { width: parent.width - Style.space(52) - Style.space(34) - oneshotBtn.width - Style.space(4) * 3; bar: root.bar; minimum: 20; maximum: 100; step: 5; integer: true; value: root.oneshotPct; onReleased: function(v) { root.oneshotPct = Math.round(v) } }
+                            Text { text: root.oneshotPct + "%"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(34); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                            Button { id: oneshotBtn; text: "Charge"; tooltipText: "Charge once to " + root.oneshotPct + "%."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.oneshotCharge(root.oneshotPct) }
+                        }
                     }
                 }
 
@@ -656,12 +741,12 @@ Panel {
                     Row { width: parent.width
                         Text { text: "KEYBOARD RGB"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.subtitle; font.bold: true; anchors.verticalCenter: parent.verticalCenter; width: parent.width - ledSw.width - Style.space(8) }
                         Row { id: ledSw; spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
-                            Rectangle { width: Style.space(14); height: Style.space(14); radius: Style.space(7); color: root.ledAwake ? "#44cc44" : "#cc4444"; anchors.verticalCenter: parent.verticalCenter
-                                SequentialAnimation on opacity { running: root.ledAwake; loops: Animation.Infinite; NumberAnimation { from: 1; to: 0.5; duration: 800 } NumberAnimation { from: 0.5; to: 1; duration: 800 } }
+                            Rectangle { width: Style.space(14); height: Style.space(14); radius: Style.space(7); color: root.keyboardLit ? "#44cc44" : "#cc4444"; anchors.verticalCenter: parent.verticalCenter
+                                SequentialAnimation on opacity { running: root.keyboardLit; loops: Animation.Infinite; NumberAnimation { from: 1; to: 0.5; duration: 800 } NumberAnimation { from: 0.5; to: 1; duration: 800 } }
                             }
-                            Text { text: root.ledAwake ? "ON" : "OFF"; color: root.ledAwake ? "#44cc44" : "#cc4444"; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                            MouseArea { id: ledPowerMouse; width: Style.space(40); height: Style.space(20); anchors.verticalCenter: parent.verticalCenter; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setLedPower(!root.ledAwake)
-                                PanelToolTip { visible: ledPowerMouse.containsMouse; text: root.ledAwake ? "Keyboard lighting is on. Click to turn it off." : "Keyboard lighting is off. Click to turn it on." }
+                            Text { text: root.keyboardLit ? "ON" : "OFF"; color: root.keyboardLit ? "#44cc44" : "#cc4444"; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            MouseArea { id: ledPowerMouse; width: Style.space(40); height: Style.space(20); anchors.verticalCenter: parent.verticalCenter; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleKeyboardPower()
+                                PanelToolTip { visible: ledPowerMouse.containsMouse; text: root.keyboardLit ? "Keyboard lighting is on. Click to turn it off." : "Keyboard lighting is off. Click to turn it on." }
                             }
                         }
                     }
@@ -768,10 +853,49 @@ Panel {
                         }
                     }
 
-                    // Power states — G-Helper's "keyboard lighting on
-                    // boot/sleep/awake". asusctl exposes these as one call, so
-                    // each toggle resends the whole set (see applyLedPower).
-                    Column { width: parent.width; spacing: Style.space(4)
+                    // Per-zone aura power (newer 2021+ keyboards). Each zone the
+                    // laptop reports gets its own row of power-state switches;
+                    // zones the hardware lacks never appear, which is what keeps
+                    // this section honest on a TUF that only exposes Keyboard.
+                    Column { visible: root.auraPowerZones.length > 0; width: parent.width; spacing: Style.space(6)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        Text { text: "Aura power zones"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                        Repeater {
+                            model: root.auraPowerZones
+                            Column {
+                                id: zoneCol
+                                required property string modelData
+                                readonly property string zoneName: modelData
+                                width: parent.width; spacing: Style.space(3)
+                                Text { text: Model.auraZoneLabel(zoneCol.zoneName); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                Row { id: zoneRow; width: parent.width; spacing: Style.space(4)
+                                    readonly property real cw: (width - spacing * (Model.auraPowerStates.length - 1)) / Model.auraPowerStates.length
+                                    Repeater {
+                                        model: Model.auraPowerStates
+                                        Button {
+                                            required property string modelData
+                                            width: zoneRow.cw
+                                            text: Model.auraStateLabels[modelData]
+                                            tooltipText: "Power the " + Model.auraZoneLabel(zoneCol.zoneName) + " zone during the \"" + Model.auraStateLabels[modelData] + "\" state."
+                                            fontSize: Style.font.caption
+                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                            horizontalPadding: Style.spacing.controlPaddingX
+                                            verticalPadding: Style.spacing.controlPaddingY
+                                            bordered: true
+                                            active: root.auraPowerOn(zoneCol.zoneName, modelData)
+                                            onClicked: root.setAuraPower(zoneCol.zoneName, modelData, !root.auraPowerOn(zoneCol.zoneName, modelData))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text { width: parent.width; text: "asusctl does not report these back, so they show what this panel last set."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.6); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                    }
+
+                    // Legacy power-tuf states — old ROG/TUF models that report no
+                    // aura power zones. asusctl takes these in one call, so each
+                    // toggle resends the whole set (see applyLedPower).
+                    Column { visible: root.auraPowerZones.length === 0; width: parent.width; spacing: Style.space(4)
                         PanelSeparator { foreground: root.bar.foreground }
                         Text { text: "Lighting active while"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                         Row { width: parent.width; spacing: Style.space(4)
@@ -888,7 +1012,22 @@ Panel {
                         Text { width: parent.width - defaultsBtn.width - Style.space(8); text: "Firmware power limits. Only the controls this laptop actually reports are shown."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                         Button { id: defaultsBtn; text: "Defaults"; tooltipText: "Put every power limit below back to the value\nthe firmware reports as its default."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.restorePowerDefaults() }
                     }
-                    Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2; width: parent.width; spacing: Style.space(4)
+                    // Profile tuning gates whether the PPT limits below actually
+                    // reach the hardware; while off they are stored but inert.
+                    Toggle {
+                        id: tuningToggle
+                        visible: root.supported.hasProfile
+                        width: parent.width
+                        label: "Profile tuning"
+                        description: "Apply the power limits below to the hardware"
+                        checked: root.profileTuning
+                        foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
+                        onClicked: root.setProfileTuning(!root.profileTuning)
+                        property bool tipHovered: false
+                        onHovered: function(h) { tuningToggle.tipHovered = h }
+                        PanelToolTip { visible: tuningToggle.tipHovered; text: "Gate for the firmware PPT limits.\nWhile off, PL1/PL2/PL3 and the GPU limits are stored but not applied;\nasusctl reapplies them once tuning is turned back on." }
+                    }
+                    Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(4)
                         Text { text: "CPU Power"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                         Row { visible: root.armourySupported.pptPl1; width: parent.width; spacing: Style.space(4)
                             Text { text: "PL1"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter
@@ -905,6 +1044,14 @@ Panel {
                             }
                             PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.pptPl2Min; maximum: root.pptPl2Max; step: 1; integer: true; value: root.pptPl2; onReleased: function(v) { root.setPptPl2(v) } }
                             Text { text: root.pptPl2 + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                        Row { visible: root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(4)
+                            Text { text: "PL3"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter
+                                MouseArea { id: pl3Help; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                                PanelToolTip { visible: pl3Help.containsMouse; text: Model.armouryTips.ppt_pl3_fppt }
+                            }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.pptPl3Min; maximum: root.pptPl3Max; step: 1; integer: true; value: root.pptPl3; onReleased: function(v) { root.setPptPl3(v) } }
+                            Text { text: root.pptPl3 + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                     }
                     Column { visible: root.armourySupported.nvDynBoost || root.armourySupported.nvTempTarget; width: parent.width; spacing: Style.space(4)
@@ -939,6 +1086,12 @@ Panel {
     }
 
     IpcHandler { target: "io.github.moneytosms.asus"; function open() { root.open() } function close() { root.close() } function show() { root.open() } function hide() { root.close() } function toggle() { root.toggle() } function refresh() { root.refresh() } }
+    // Apply the configured per-source default profile when the charger is
+    // plugged or unplugged (see applyDefaultProfile).
+    Connections {
+        target: UPower
+        function onOnBatteryChanged() { root.applyDefaultProfile() }
+    }
     onOpenedChanged: { if (opened) { Qt.callLater(refresh); cursorActive = false } }
     Component.onCompleted: { checkEcoMarker.running = true; checkHyprmoncfg.running = true }
 
@@ -947,7 +1100,8 @@ Panel {
     Process { id: ecoMarkerProc }
     Process { id: checkAsusctl; command: ["which", "asusctl"]; onExited: function(ec) { root.asusctlAvailable = ec === 0; if (root.asusctlAvailable) refresh() } }
     Process { id: profileProc; command: ["asusctl", "profile", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { var p = Model.parseCurrentProfile(text); if (p) { root.currentProfile = p; var i = root.profiles.indexOf(p); if (i >= 0) root.profileIndex = i }; root.acProfile = Model.parseProfiles(text); root.profileLoaded = true } } }
-    Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.infoLoaded = true } } }
+    Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.initAuraPowerState(root.supported.auraPowerZones || []); root.infoLoaded = true } } }
+    Process { id: tuningProc; command: ["asusctl", "profile", "tuning"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.profileTuning = Model.parseProfileTuning(text) } } }
     Process { id: batteryProc; command: ["asusctl", "battery", "info"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.batteryLimit = Model.parseBatteryInfo(text).limit } } }
     Process { id: ledProc; command: ["asusctl", "leds", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.ledBrightness = Model.parseLedBrightness(text) } } }
     Process {
@@ -995,6 +1149,8 @@ Panel {
         if (r.ppt_pl1_spl) { root.pptPl1Min = r.ppt_pl1_spl.min; root.pptPl1Max = r.ppt_pl1_spl.max }
         if (v.ppt_pl2_sppt !== undefined) root.pptPl2 = v.ppt_pl2_sppt
         if (r.ppt_pl2_sppt) { root.pptPl2Min = r.ppt_pl2_sppt.min; root.pptPl2Max = r.ppt_pl2_sppt.max }
+        if (v.ppt_pl3_fppt !== undefined) root.pptPl3 = v.ppt_pl3_fppt
+        if (r.ppt_pl3_fppt) { root.pptPl3Min = r.ppt_pl3_fppt.min; root.pptPl3Max = r.ppt_pl3_fppt.max }
         if (v.nv_dynamic_boost !== undefined) root.nvDynBoost = v.nv_dynamic_boost
         if (r.nv_dynamic_boost) { root.nvDynBoostMin = r.nv_dynamic_boost.min; root.nvDynBoostMax = r.nv_dynamic_boost.max }
         if (v.nv_temp_target !== undefined) root.nvTempTarget = v.nv_temp_target
@@ -1031,7 +1187,7 @@ Panel {
     }
     Process { id: hyprmoncfgSaveProc; onExited: function() { if (!monitorProc.running) monitorProc.running = true } }
     Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text) } } }
-    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
+    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!tuningProc.running) tuningProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
 
     // Sensors run on their own, faster tick — the asusctl round-trip is much

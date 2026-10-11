@@ -59,6 +59,31 @@ function buildAuraCommand(effectId, params) {
     return cmd
 }
 
+// Per-zone aura power states for the newer (2021+) API. Unlike power-tuf these
+// are plain boolean switches: a switch that is present means "enabled", an
+// omitted one means "disabled", so a write has to include every enabled state
+// for that zone or the missing ones get turned off.
+var auraPowerStates = ["awake", "boot", "sleep", "shutdown"]
+var auraStateLabels = { awake: "Awake", boot: "Boot", sleep: "Sleep", shutdown: "Shut" }
+var auraZoneLabels = {
+    keyboard: "Keyboard", logo: "Logo", lightbar: "Lightbar",
+    lid: "Lid", "rear-glow": "Rear glow", ally: "Ally"
+}
+
+function auraZoneLabel(zone) {
+    return auraZoneLabels[zone] || String(zone || "")
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, function(c) { return c.toUpperCase() })
+}
+
+function buildAuraPowerCommand(zone, state) {
+    var cmd = ["asusctl", "aura", "power", zone]
+    for (var i = 0; i < auraPowerStates.length; i++) {
+        if (state && state[auraPowerStates[i]]) cmd.push("--" + auraPowerStates[i])
+    }
+    return cmd
+}
+
 // ============================================================
 // Profile
 // ============================================================
@@ -127,6 +152,18 @@ function profileCommand(profile, onBattery) {
     return ["asusctl", "profile", "set", onBattery ? "--battery" : "--ac", profile]
 }
 
+// `asusctl profile tuning` prints "Profile tuning: true|false". Profile tuning
+// gates whether the armoury PPT attributes are applied to the hardware — see
+// setPptPl1 in Panel.qml — so the panel surfaces it next to those limits.
+function parseProfileTuning(raw) {
+    var m = String(raw || "").match(/Profile tuning:\s*(true|false)/i)
+    return m ? m[1].toLowerCase() === "true" : false
+}
+
+function tuningCommand(on) {
+    return ["asusctl", "profile", "tuning", on ? "true" : "false"]
+}
+
 // ============================================================
 // Feature detection
 // ============================================================
@@ -142,7 +179,11 @@ function parseSupportedFeatures(raw) {
         hasBattery: text.indexOf("ChargeControlEndThreshold") >= 0 || text.indexOf("battery") >= 0 || text.indexOf("Battery") >= 0,
         hasProfile: text.indexOf("Platform") >= 0,
         hasAniMe: text.indexOf("anime") >= 0,
-        auraModes: parseListSection(text, "Supported Aura Modes:")
+        auraModes: parseListSection(text, "Supported Aura Modes:"),
+        // Newer (2021+) keyboards report the zones whose per-power-state
+        // lighting can be toggled through `asusctl aura power <zone>`. Older
+        // ROG/TUF models report none and use the legacy power-tuf call instead.
+        auraPowerZones: parseListSection(text, "Supported Aura Power Zones:")
     }
 }
 
@@ -174,6 +215,12 @@ function parseBatteryInfo(raw) {
     var m = text.match(/(\d+)%/)
     if (m) r.limit = parseInt(m[1])
     return r
+}
+
+// One-shot full charge ignores the charge limit and tops the battery up to the
+// target once (asusctl defaults it to 100 when no percent is given).
+function batteryOneshotCommand(percent) {
+    return ["asusctl", "battery", "oneshot", String(clamp(Math.round(percent), 20, 100))]
 }
 
 // ============================================================
@@ -367,6 +414,7 @@ function parseArmoury(raw) {
     out.supported.dgpuDisable    = !!out.supported["dgpu_disable"]
     out.supported.pptPl1         = !!out.supported["ppt_pl1_spl"]
     out.supported.pptPl2         = !!out.supported["ppt_pl2_sppt"]
+    out.supported.pptPl3         = !!out.supported["ppt_pl3_fppt"]
     out.supported.nvDynBoost     = !!out.supported["nv_dynamic_boost"]
     out.supported.nvTempTarget   = !!out.supported["nv_temp_target"]
     return out
@@ -521,6 +569,7 @@ var gpuModes = [
 var armouryTips = {
     ppt_pl1_spl: "Sustained CPU power limit (PL1).\nThe wattage the CPU settles at under a long load.",
     ppt_pl2_sppt: "Short-burst CPU power limit (PL2).\nThe wattage the CPU may pull briefly before dropping to PL1.",
+    ppt_pl3_fppt: "Fastest-package CPU power limit (PL3/FPPT).\nThe peak the CPU may reach for a very short spike, above PL2.",
     nv_dynamic_boost: "NVIDIA Dynamic Boost.\nExtra watts the GPU may borrow from the CPU's budget when the CPU is idle.",
     nv_temp_target: "GPU temperature target.\nThe GPU throttles itself to stay at or below this. Lower is cooler and quieter, and slower.",
     panel_overdrive: "Speeds up pixel transitions to cut ghosting at high refresh rates.\nCan cause slight overshoot artefacts on some panels."

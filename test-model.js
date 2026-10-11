@@ -18,6 +18,18 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, "Model.js"), "utf8"), M)
 assert.deepEqual(M.profileCommand("Performance", false), ["asusctl", "profile", "set", "--ac", "Performance"])
 assert.deepEqual(M.profileCommand("Quiet", true), ["asusctl", "profile", "set", "--battery", "Quiet"])
 
+// ---------------------------------------------------------------- tuning
+assert.equal(M.parseProfileTuning("Profile tuning: true\n"), true)
+assert.equal(M.parseProfileTuning("Profile tuning: false\n"), false)
+assert.equal(M.parseProfileTuning(""), false)
+assert.deepEqual(M.tuningCommand(true), ["asusctl", "profile", "tuning", "true"])
+assert.deepEqual(M.tuningCommand(false), ["asusctl", "profile", "tuning", "false"])
+
+// ---------------------------------------------------------------- battery
+assert.deepEqual(M.batteryOneshotCommand(90), ["asusctl", "battery", "oneshot", "90"])
+// Clamped to asusctl's accepted 20-100 range.
+assert.deepEqual(M.batteryOneshotCommand(5), ["asusctl", "battery", "oneshot", "20"])
+
 // ---------------------------------------------------------------- armoury
 const ARMOURY = `Multiple asusd interfaces devices found
 charge_mode:
@@ -47,15 +59,22 @@ ppt_pl1_spl:
 ppt_pl2_sppt:
   current: 28..[135]..135
   default: 135
+
+ppt_pl3_fppt:
+  current: 35..[80]..80
+  default: 80
 `
 
 const a = M.parseArmoury(ARMOURY)
 assert.equal(a.supported.pptPl1, true)
+assert.equal(a.supported.pptPl3, true)
 assert.equal(a.supported.nvTempTarget, true)
 assert.equal(a.supported.panelOverdrive, true)
 assert.equal(a.values.ppt_pl1_spl, 133)
 assert.deepEqual(a.ranges.ppt_pl1_spl, { min: 28, max: 135 })
 assert.equal(a.defaults.ppt_pl1_spl, 115)
+assert.equal(a.values.ppt_pl3_fppt, 80)
+assert.equal(a.defaults.ppt_pl3_fppt, 80)
 assert.equal(a.values.gpu_mux_mode, 0)
 // "Multiple asusd interfaces devices found" must not be read as an attribute.
 assert.equal(a.supported["Multiple asusd interfaces devices found"], undefined)
@@ -161,11 +180,36 @@ Supported Aura Modes:
     Static,
     Breathe,
 ]
+Supported Aura Power Zones:
+[
+    Keyboard,
+]
 `
 const f = M.parseSupportedFeatures(INFO)
 assert.equal(f.hasBattery, true)
 assert.deepEqual(f.auraModes, ["Static", "Breathe"])
+assert.deepEqual(f.auraPowerZones, ["Keyboard"])
 assert.equal(M.supportedEffects(f.auraModes).length, 2)
+
+// Older models report no aura power zones and fall back to power-tuf.
+const OLD_INFO = `Supported Aura Modes:
+[
+    Static,
+]
+`
+assert.deepEqual(M.parseSupportedFeatures(OLD_INFO).auraPowerZones, [])
+
+// ---------------------------------------------------------------- aura power
+// Boolean switches: enabled states are present, disabled ones omitted, so a
+// state has to be resent in full or asusctl reads the gaps as false.
+assert.deepEqual(M.buildAuraPowerCommand("keyboard", { awake: true, boot: true, sleep: true, shutdown: false }),
+    ["asusctl", "aura", "power", "keyboard", "--awake", "--boot", "--sleep"])
+assert.deepEqual(M.buildAuraPowerCommand("lightbar", { awake: true, boot: false, sleep: false, shutdown: true }),
+    ["asusctl", "aura", "power", "lightbar", "--awake", "--shutdown"])
+assert.deepEqual(M.buildAuraPowerCommand("logo", {}), ["asusctl", "aura", "power", "logo"])
+assert.deepEqual(M.auraPowerStates, ["awake", "boot", "sleep", "shutdown"])
+assert.equal(M.auraZoneLabel("rear-glow"), "Rear glow")
+assert.equal(M.auraZoneLabel("keyboard"), "Keyboard")
 
 // ---------------------------------------------------------------- fan curves
 const pts = M.parseFanPoints("30c:1%,49c:2%,60c:40%")
