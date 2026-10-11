@@ -3,9 +3,9 @@
   "id": "io.github.moneytosms.asus",
   "name": "ASUS",
   "version": "2.2.0",
-  "author": "moneytosms",
+  "author": "iamkuo",
   "license": "MIT",
-  "homepage": "https://github.com/moneytosms/omarchy-asus",
+  "homepage": "https://github.com/iamkuo/omarchy-asus",
   "description": "G-Helper-style ASUS laptop control — live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, editable fan curves, firmware power limits, and per-zone aura power — from the Omarchy bar",
   "kinds": [
     "bar-widget"
