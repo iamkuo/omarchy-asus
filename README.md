@@ -49,9 +49,9 @@ that.
 - **Advanced** — firmware power limits (PL1/PL2/PL3-FPPT, GPU dynamic boost,
   GPU temp target) with ranges read from the firmware and a "Defaults" button
   that replays the values `asusctl` reports as default. Each control appears
-  only if `asusctl armoury list` says your laptop exposes it. A "Profile
-  tuning" switch gates whether those limits are actually applied — asusctl
-  stores them but leaves them inert while tuning is off.
+  only if `asusctl armoury list` says your laptop exposes it. Note that PPT
+  limits are only applied by the firmware while profile tuning is enabled
+  (`asusctl profile tuning true`); asusd stores the values either way.
 - **Bar icon** — scroll over it to cycle performance modes without opening the
   panel.
 
@@ -76,10 +76,12 @@ power source keeps its saved choice. `asusd` handles applying these profiles
 when the charger is connected or disconnected. Scrolling the bar icon uses
 the same behavior.
 
-If you would rather pin the profile yourself, set `defaultProfileAc` and
-`defaultProfileBattery` in the plugin settings: when the charger is plugged or
-unplugged the panel applies the chosen profile for that source. Both default
-to `Auto`, which leaves the choice to asusd.
+If you would rather pin the profile yourself, use the **Auto-switch on power**
+section on the Main tab: choose a profile for "Plugged in" and one for "On
+battery", and the panel applies it when the charger changes. These are stored
+as the `defaultProfileAc` and `defaultProfileBattery` plugin settings
+(`Auto`, `Quiet`, `Balanced`, `Performance`), so they also appear wherever
+those settings are edited. `Auto` leaves the choice to asusd.
 
 ### Screen refresh rate
 

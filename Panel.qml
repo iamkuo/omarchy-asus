@@ -283,9 +283,6 @@ Panel {
     // actually exposes (no dGPU / no panel overdrive on some models).
     property var armourySupported: ({ panelOverdrive: false, gpuMux: false, dgpuDisable: false, pptPl1: false, pptPl2: false, pptPl3: false, nvDynBoost: false, nvTempTarget: false })
     property var armouryDefaults: ({})
-    // Profile tuning gates whether the PPT limits above are actually applied to
-    // the hardware — they are stored but inert while it is off.
-    property bool profileTuning: false
     // Battery one-shot charge target (asusctl battery oneshot <percent>).
     property int oneshotPct: 100
     property bool panelOverdrive: false
@@ -344,7 +341,6 @@ Panel {
         if (!armouryProc.running) armouryProc.running = true
         if (!monitorProc.running) monitorProc.running = true
         if (hyprmoncfgAvailable && !hyprmoncfgProc.running) hyprmoncfgProc.running = true
-        if (supported.hasProfile && !tuningProc.running) tuningProc.running = true
         if (supported.hasFanCurve) { if (!fanDetailProc.running) fanDetailProc.running = true }
     }
 
@@ -418,11 +414,22 @@ Panel {
     // Optional plugin-side defaults: apply the user's chosen profile for the
     // power source that just became active. "Auto" does nothing, leaving the
     // per-source profile asusd has saved in charge.
+    function defaultProfileFor(source) { return source === "battery" ? root.defaultProfileBattery : root.defaultProfileAc }
     function applyDefaultProfile() {
         if (!asusctlAvailable) return
         var p = UPower.onBattery ? root.defaultProfileBattery : root.defaultProfileAc
         if (!p || p === "Auto") return
         setProfile(p)
+    }
+    // Persist a per-source preset to shell.json through the bar settings API,
+    // so it survives restarts and is the same value the settings UI edits. When
+    // the edited source is the one currently active, apply it right away;
+    // otherwise it takes effect on the next plug/unplug.
+    function setDefaultProfile(source, value) {
+        var key = source === "battery" ? "defaultProfileBattery" : "defaultProfileAc"
+        persistProc.command = ["omarchy", "bar", "set", moduleName, key, value]
+        persistProc.running = true
+        if ((source === "battery") === UPower.onBattery && value !== "Auto") setProfile(value)
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -448,14 +455,6 @@ Panel {
     function setPptPl3(v) { pptPl3 = Math.round(v); setArmouryAttr("ppt_pl3_fppt", pptPl3) }
     function setNvDynBoost(v) { nvDynBoost = Math.round(v); setArmouryAttr("nv_dynamic_boost", nvDynBoost) }
     function setNvTempTarget(v) { nvTempTarget = Math.round(v); setArmouryAttr("nv_temp_target", nvTempTarget) }
-    // Profile tuning gates whether the PPT limits are applied at all; the
-    // firmware stores them either way. asusctl accepts true/false and prints
-    // the current state when called with no argument.
-    function setProfileTuning(on) {
-        profileTuning = on
-        actionProc.command = Model.tuningCommand(on)
-        actionProc.running = true
-    }
     // Firmware ships a sane default per attribute; `asusctl armoury list`
     // reports it, so "Defaults" is just replaying those values.
     function restorePowerDefaults() {
@@ -647,6 +646,44 @@ Panel {
                         Row { id: pRow; width: parent.width; spacing: Style.space(4); readonly property real cw: root.profiles.length > 0 ? (width - spacing * (root.profiles.length - 1)) / root.profiles.length : 0
                             Repeater { model: root.profiles
                                 Button { required property var modelData; required property int index; width: pRow.cw; iconText: Model.profileIcon(String(modelData)); iconSize: Style.font.title; text: String(modelData); tooltipText: Model.profileDescription(String(modelData)); fontSize: Style.font.bodySmall; foreground: root.currentProfile === modelData ? Model.profileColor(String(modelData)) : root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; active: root.currentProfile === modelData; hasCursor: root.cursorActive && root.profileIndex === index; onClicked: root.setProfile(modelData); onHovered: function(h) { if (h) { root.cursorActive = true; root.profileIndex = index } } }
+                            }
+                        }
+                    }
+
+                    // AUTO-SWITCH ON POWER — saves a preset per source and applies
+                    // it when the charger is plugged or unplugged. Persisted in
+                    // shell.json through `omarchy bar set`.
+                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(8)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "AUTO-SWITCH ON POWER"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Repeater {
+                            model: [{ key: "ac", label: "Plugged in" }, { key: "battery", label: "On battery" }]
+                            Column {
+                                id: presetBlock
+                                required property var modelData
+                                width: parent.width; spacing: Style.space(3)
+                                Text { text: presetBlock.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                Row { id: presetRow; width: parent.width; spacing: Style.space(4)
+                                    readonly property real cw: (width - spacing * 3) / 4
+                                    Repeater {
+                                        model: ["Auto", "Quiet", "Balanced", "Performance"]
+                                        Button {
+                                            required property string modelData
+                                            width: presetRow.cw
+                                            text: modelData
+                                            tooltipText: modelData === "Auto"
+                                                ? "Do not switch automatically; leave the " + (presetBlock.modelData.key === "battery" ? "battery" : "AC") + " profile as asusd has it."
+                                                : "Apply " + modelData + " automatically when the charger is " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
+                                            fontSize: Style.font.caption
+                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                            horizontalPadding: Style.spacing.controlPaddingX
+                                            verticalPadding: Style.spacing.controlPaddingY
+                                            bordered: true
+                                            active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
+                                            onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1012,21 +1049,6 @@ Panel {
                         Text { width: parent.width - defaultsBtn.width - Style.space(8); text: "Firmware power limits. Only the controls this laptop actually reports are shown."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                         Button { id: defaultsBtn; text: "Defaults"; tooltipText: "Put every power limit below back to the value\nthe firmware reports as its default."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.restorePowerDefaults() }
                     }
-                    // Profile tuning gates whether the PPT limits below actually
-                    // reach the hardware; while off they are stored but inert.
-                    Toggle {
-                        id: tuningToggle
-                        visible: root.supported.hasProfile
-                        width: parent.width
-                        label: "Profile tuning"
-                        description: "Apply the power limits below to the hardware"
-                        checked: root.profileTuning
-                        foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
-                        onClicked: root.setProfileTuning(!root.profileTuning)
-                        property bool tipHovered: false
-                        onHovered: function(h) { tuningToggle.tipHovered = h }
-                        PanelToolTip { visible: tuningToggle.tipHovered; text: "Gate for the firmware PPT limits.\nWhile off, PL1/PL2/PL3 and the GPU limits are stored but not applied;\nasusctl reapplies them once tuning is turned back on." }
-                    }
                     Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(4)
                         Text { text: "CPU Power"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                         Row { visible: root.armourySupported.pptPl1; width: parent.width; spacing: Style.space(4)
@@ -1098,10 +1120,11 @@ Panel {
     // Marker must be read before the first armoury refresh, so it gates checkAsusctl.
     Process { id: checkEcoMarker; command: ["test", "-f", root.ecoMarker]; onExited: function(ec) { root.ecoPending = ec === 0; checkAsusctl.running = true } }
     Process { id: ecoMarkerProc }
+    // Writes per-source preset choices back into shell.json's widget settings.
+    Process { id: persistProc }
     Process { id: checkAsusctl; command: ["which", "asusctl"]; onExited: function(ec) { root.asusctlAvailable = ec === 0; if (root.asusctlAvailable) refresh() } }
     Process { id: profileProc; command: ["asusctl", "profile", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { var p = Model.parseCurrentProfile(text); if (p) { root.currentProfile = p; var i = root.profiles.indexOf(p); if (i >= 0) root.profileIndex = i }; root.acProfile = Model.parseProfiles(text); root.profileLoaded = true } } }
     Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.initAuraPowerState(root.supported.auraPowerZones || []); root.infoLoaded = true } } }
-    Process { id: tuningProc; command: ["asusctl", "profile", "tuning"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.profileTuning = Model.parseProfileTuning(text) } } }
     Process { id: batteryProc; command: ["asusctl", "battery", "info"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.batteryLimit = Model.parseBatteryInfo(text).limit } } }
     Process { id: ledProc; command: ["asusctl", "leds", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.ledBrightness = Model.parseLedBrightness(text) } } }
     Process {
@@ -1187,7 +1210,7 @@ Panel {
     }
     Process { id: hyprmoncfgSaveProc; onExited: function() { if (!monitorProc.running) monitorProc.running = true } }
     Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text) } } }
-    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!tuningProc.running) tuningProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
+    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
 
     // Sensors run on their own, faster tick — the asusctl round-trip is much

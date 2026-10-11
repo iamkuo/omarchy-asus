@@ -152,18 +152,6 @@ function profileCommand(profile, onBattery) {
     return ["asusctl", "profile", "set", onBattery ? "--battery" : "--ac", profile]
 }
 
-// `asusctl profile tuning` prints "Profile tuning: true|false". Profile tuning
-// gates whether the armoury PPT attributes are applied to the hardware — see
-// setPptPl1 in Panel.qml — so the panel surfaces it next to those limits.
-function parseProfileTuning(raw) {
-    var m = String(raw || "").match(/Profile tuning:\s*(true|false)/i)
-    return m ? m[1].toLowerCase() === "true" : false
-}
-
-function tuningCommand(on) {
-    return ["asusctl", "profile", "tuning", on ? "true" : "false"]
-}
-
 // ============================================================
 // Feature detection
 // ============================================================

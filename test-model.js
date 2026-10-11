@@ -18,13 +18,6 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, "Model.js"), "utf8"), M)
 assert.deepEqual(M.profileCommand("Performance", false), ["asusctl", "profile", "set", "--ac", "Performance"])
 assert.deepEqual(M.profileCommand("Quiet", true), ["asusctl", "profile", "set", "--battery", "Quiet"])
 
-// ---------------------------------------------------------------- tuning
-assert.equal(M.parseProfileTuning("Profile tuning: true\n"), true)
-assert.equal(M.parseProfileTuning("Profile tuning: false\n"), false)
-assert.equal(M.parseProfileTuning(""), false)
-assert.deepEqual(M.tuningCommand(true), ["asusctl", "profile", "tuning", "true"])
-assert.deepEqual(M.tuningCommand(false), ["asusctl", "profile", "tuning", "false"])
-
 // ---------------------------------------------------------------- battery
 assert.deepEqual(M.batteryOneshotCommand(90), ["asusctl", "battery", "oneshot", "90"])
 // Clamped to asusctl's accepted 20-100 range.
