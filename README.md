@@ -67,7 +67,9 @@ that.
 - **Services** (Advanced) — `asusd`, `supergfxd` and `nvidia-powerd` with their
   current state, since a stopped daemon is the usual reason a control in this
   panel does nothing. `nvidia-powerd` also gets an enable/disable switch, shown
-  only where the unit is actually installed.
+  only where the unit is actually installed, and a unit that is not installed at
+  all gets an Install button that adds its package and enables it
+  ([details](#installing-missing-daemons)).
 - **Bar icon** — scroll over it to cycle performance modes without opening the
   panel.
 
@@ -122,6 +124,34 @@ The flag has to be read before it can be written, since the CPU vendor decides
 both the path and the polarity (`no_turbo` is inverted against `cpufreq/boost`),
 so a mode switch made from the bar with the panel closed parks that mode and
 applies it as soon as the first probe lands.
+
+### Installing missing daemons
+
+A unit that is genuinely not installed — as opposed to one that is installed but
+stopped, or a probe that has not answered yet — gets an **Install** button next to
+its state. The button opens a terminal through Omarchy's own
+`omarchy-launch-tui` and runs:
+
+| Unit | Package | What runs |
+|---|---|---|
+| `asusd.service` | `asusctl` | `omarchy-pkg-add asusctl && sudo systemctl enable --now asusd.service` |
+| `supergfxd.service` | `supergfxctl` | `omarchy-pkg-aur-add supergfxctl && sudo systemctl enable --now supergfxd.service` |
+| `nvidia-powerd.service` | `nvidia-utils` | `omarchy-pkg-add nvidia-utils && sudo systemctl enable --now nvidia-powerd.service` |
+
+`asusctl` is what Omarchy's own installer adds for ROG hardware, so it goes
+through the repo adder; `supergfxctl` is AUR-only there and goes through yay. The
+terminal stays open with Omarchy's done prompt so the result is readable, and the
+panel picks the new state up on its next refresh.
+
+The NVIDIA row is only offered on a laptop whose firmware reports the NVIDIA
+attributes this panel already reads (`nv_temp_target` / `nv_dynamic_boost`), since
+that package is the driver itself and there is no reason to pull it onto an
+AMD-only machine.
+
+None of this goes through `pkexec`: pacman has to prompt for your password
+itself, and you should see what it does. If the terminal cannot be opened at all
+(no `omarchy-launch-tui`), the panel says so and prints the command to run by
+hand.
 
 ### Screen refresh rate
 

@@ -226,6 +226,11 @@ Panel {
     readonly property var nvidiaPowerd: root.services.nvidiaPowerd || ({ load: "", active: "" })
     readonly property bool nvidiaPowerdPresent: Model.servicePresent(root.nvidiaPowerd)
     readonly property bool nvidiaPowerdActive: Model.serviceActive(root.nvidiaPowerd)
+    // nvidia-powerd ships with the driver package, so offering to install it only
+    // makes sense where the firmware reports the NVIDIA attributes this panel
+    // already reads. On an AMD-only laptop the offer would be noise, and acting
+    // on it would pull a driver nobody asked for.
+    readonly property bool nvidiaDgpu: !!(root.armourySupported.nvTempTarget || root.armourySupported.nvDynBoost)
 
     // Live sensors — refreshed on a faster tick than the asusctl state, since
     // temps and fan speeds are the numbers you actually watch move.
@@ -409,6 +414,18 @@ Panel {
         setServiceActive("nvidiaPowerd", on ? "active" : "inactive")
         powerdWriteProc.command = Model.nvidiaPowerdSetCommand(on)
         powerdWriteProc.running = true
+    }
+
+    // A missing unit is the one state a button can fix outright. The install runs
+    // in Omarchy's own terminal so pacman can prompt for sudo and show what it
+    // does, which means this Process only reports whether the terminal opened —
+    // the result of the install itself shows up on the next refresh.
+    function installService(id) {
+        var cmd = Model.serviceInstallCommand(id)
+        if (!cmd || installProc.running) return
+        installProc.pkgCommand = Model.serviceInstallPkgCommand(id)
+        installProc.command = cmd
+        installProc.running = true
     }
 
     // Failed writes get a line of their own, cleared after a few seconds.
@@ -1357,17 +1374,35 @@ Panel {
                         PanelSectionHeader { text: "SERVICES"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
                         Repeater {
                             // asusd and supergfxd are read-only here; nvidia-powerd
-                            // gets a switch instead (below), so it is left out.
+                            // gets a switch instead (below), so it is left out. A unit
+                            // that is not installed gets an install button, which is
+                            // the one state a button can fix outright.
                             model: Model.serviceUnits.slice(0, 2)
                             Row {
                                 id: svcRow
                                 required property var modelData
+                                readonly property var state: root.services[svcRow.modelData.id]
+                                readonly property bool installable: Model.serviceInstallable(svcRow.modelData, svcRow.state)
                                 width: parent.width; spacing: Style.space(6)
-                                Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.services[svcRow.modelData.id]) }
+                                Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(svcRow.state) }
                                 Text { text: svcRow.modelData.id; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                                Text { text: Model.serviceStateLabel(root.services[svcRow.modelData.id]); color: Model.serviceStateColor(root.services[svcRow.modelData.id]); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                                Text { text: Model.serviceStateLabel(svcRow.state); color: Model.serviceStateColor(svcRow.state); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                                 MouseArea { id: svcHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: svcHelp.containsMouse; text: svcRow.modelData.tip }
+                                // Declared after the row's hover catcher so the click
+                                // lands on the button, not on the tooltip area.
+                                Button {
+                                    visible: svcRow.installable
+                                    text: Model.serviceInstallLabel(svcRow.modelData.id)
+                                    tooltipText: "Installs " + svcRow.modelData.pkg + " and enables " + svcRow.modelData.unit + ".\nOpens a terminal so pacman can ask for your password, and\nleaves it open with the result when it is done."
+                                    fontSize: Style.font.caption
+                                    foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                    horizontalPadding: Style.spacing.controlPaddingX
+                                    verticalPadding: Style.spacing.controlPaddingY
+                                    bordered: true
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    onClicked: root.installService(svcRow.modelData.id)
+                                }
                             }
                         }
                         Toggle {
@@ -1382,6 +1417,29 @@ Panel {
                             property bool tipHovered: false
                             onHovered: function(h) { powerdToggle.tipHovered = h }
                             PanelToolTip { visible: powerdToggle.tipHovered; text: Model.serviceUnits[2].tip + "\nEnables or disables the unit through pkexec systemctl." }
+                        }
+                        // nvidia-powerd only gets the switch once its unit exists, so
+                        // a laptop without the driver package is offered the install
+                        // here instead — and only when the firmware reports NVIDIA
+                        // hardware, since the package is the driver itself.
+                        Row {
+                            id: powerdInstallRow
+                            visible: root.nvidiaDgpu && Model.serviceMissing(root.services.nvidiaPowerd)
+                            width: parent.width; spacing: Style.space(6)
+                            Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.services.nvidiaPowerd) }
+                            Text { text: "nvidia-powerd"; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: Model.serviceStateLabel(root.services.nvidiaPowerd); color: Model.serviceStateColor(root.services.nvidiaPowerd); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            Button {
+                                text: Model.serviceInstallLabel("nvidiaPowerd")
+                                tooltipText: "nvidia-powerd ships inside the NVIDIA driver package, so this installs\nnvidia-utils and enables the unit. Offered only because this laptop\nreports NVIDIA hardware."
+                                fontSize: Style.font.caption
+                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                horizontalPadding: Style.spacing.controlPaddingX
+                                verticalPadding: Style.spacing.controlPaddingY
+                                bordered: true
+                                anchors.verticalCenter: parent.verticalCenter
+                                onClicked: root.installService("nvidiaPowerd")
+                            }
                         }
                     }
                 }
@@ -1539,6 +1597,17 @@ Panel {
         }
     }
     Timer { id: errorClearTimer; interval: 8000; onTriggered: root.actionError = "" }
+    // Launching the install terminal. A non-zero exit here means the launcher
+    // itself failed (no omarchy-launch-tui, no terminal), so the manual command is
+    // what the user needs to see.
+    Process {
+        id: installProc
+        property string pkgCommand: ""
+        onExited: function(ec) {
+            if (ec === 0) return
+            root.showActionError("Could not open a terminal for the install — run \"" + installProc.pkgCommand + "\" yourself.")
+        }
+    }
     Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true; if (!turboProc.running) turboProc.running = true; if (!serviceProc.running) serviceProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
 

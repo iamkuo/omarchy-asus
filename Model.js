@@ -727,14 +727,25 @@ function turboSetCommand(kind, on) {
 // next to the controls that rely on them. LoadState separates "installed but
 // stopped" from "not installed at all", which `is-active` alone cannot do — it
 // reports "inactive" for both.
+// `pkg` is the package that ships the unit and `source` picks the adder, in
+// Omarchy's own vocabulary: Omarchy's installer uses `omarchy-pkg-add asusctl`
+// for ROG hardware, while supergfxctl is AUR-only there. `nvidia` marks a unit
+// that is only worth offering on a machine reporting an NVIDIA dGPU.
 var serviceUnits = [
-    { id: "asusd", unit: "asusd.service",
+    { id: "asusd", unit: "asusd.service", pkg: "asusctl", source: "repo",
       tip: "Owns every asusctl write — profiles, armoury, aura, fan curves.\nIf this is not running, most controls in this panel do nothing." },
-    { id: "supergfxd", unit: "supergfxd.service",
+    { id: "supergfxd", unit: "supergfxd.service", pkg: "supergfxctl", source: "aur",
       tip: "supergfxctl's graphics-switching daemon.\nOnly needed if you switch GPU modes with supergfxctl rather than asusctl." },
-    { id: "nvidiaPowerd", unit: "nvidia-powerd.service",
+    { id: "nvidiaPowerd", unit: "nvidia-powerd.service", pkg: "nvidia-utils", source: "repo", nvidia: true,
       tip: "NVIDIA dynamic boost and runtime D3 power management.\nLeave it running unless it misbehaves on your card." }
 ]
+
+function serviceUnit(id) {
+    for (var i = 0; i < serviceUnits.length; i++) {
+        if (serviceUnits[i].id === id) return serviceUnits[i]
+    }
+    return null
+}
 
 function serviceStatusCommand() {
     var script = 'for u in ' + serviceUnits.map(function(s) { return s.unit }).join(" ") + '; do ' +
@@ -784,6 +795,45 @@ function serviceStateColor(state) {
 // enable/disable --now does both halves of the change in one pkexec prompt.
 function nvidiaPowerdSetCommand(on) {
     return ["pkexec", "systemctl", on ? "enable" : "disable", "--now", "nvidia-powerd.service"]
+}
+
+// "Not installed" specifically — the unit file is absent, as opposed to a probe
+// that has not answered yet (load = "").
+function serviceMissing(state) { return !!state && state.load === "not-found" }
+
+// An install is only offered when the unit is genuinely absent and we know what
+// ships it; the panel additionally filters out the NVIDIA unit on a machine that
+// reports no NVIDIA dGPU.
+function serviceInstallable(unit, state) { return !!unit && !!unit.pkg && serviceMissing(state) }
+
+// The adder for a unit's package. Both Omarchy adders are --needed and both
+// verify the package actually landed.
+function serviceInstallPkgCommand(id) {
+    var u = serviceUnit(id)
+    if (!u || !u.pkg) return ""
+    return (u.source === "aur" ? "omarchy-pkg-aur-add " : "omarchy-pkg-add ") + u.pkg
+}
+
+// Button label, so the panel never spells a package name out itself.
+function serviceInstallLabel(id) {
+    var u = serviceUnit(id)
+    return u && u.pkg ? "Install " + u.pkg : "Install"
+}
+
+// Install the package and enable its unit in one pass, then hold the terminal
+// open with Omarchy's own done prompt so the output stays readable.
+function serviceInstallScript(id) {
+    var u = serviceUnit(id)
+    var add = serviceInstallPkgCommand(id)
+    if (!u || !add) return ""
+    return add + " && sudo systemctl enable --now " + u.unit + "; omarchy-show-done $?"
+}
+
+// Run it through Omarchy's terminal launcher rather than pkexec: pacman has to
+// be able to prompt for sudo, and the user should see what it does.
+function serviceInstallCommand(id) {
+    var script = serviceInstallScript(id)
+    return script ? ["omarchy-launch-tui", "bash", "-c", script] : null
 }
 
 // ============================================================

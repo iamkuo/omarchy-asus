@@ -274,4 +274,42 @@ assert.ok(M.serviceStatusCommand()[2].indexOf("systemctl show -p LoadState --val
 // switch, so the slice has to keep those two first.
 assert.deepEqual(M.serviceUnits.slice(0, 2).map(function(s) { return s.id }), ["asusd", "supergfxd"])
 
+// ---------------------------------------------------------------- install offers
+// An install is only offered for a unit that is genuinely absent: "not read yet"
+// and "installed but stopped" both have to stay quiet, or the button would appear
+// before the first probe answers.
+assert.equal(M.serviceMissing(undefined), false)
+assert.equal(M.serviceMissing(M.parseServiceStatus("").asusd), false)
+assert.equal(M.serviceMissing(svc.supergfxd), false)
+assert.equal(M.serviceMissing(svc.nvidiaPowerd), true)
+assert.equal(M.serviceInstallable(M.serviceUnits[0], svc.asusd), false)
+assert.equal(M.serviceInstallable(M.serviceUnits[2], svc.nvidiaPowerd), true)
+assert.equal(M.serviceInstallable(null, svc.nvidiaPowerd), false)
+assert.equal(M.serviceInstallable(M.serviceUnits[0], undefined), false)
+
+// asusctl is what Omarchy's own installer adds for ROG hardware, so it goes
+// through the repo adder; supergfxctl is AUR-only there. Each install enables its
+// unit and holds the terminal open with Omarchy's done prompt.
+assert.equal(M.serviceInstallPkgCommand("asusd"), "omarchy-pkg-add asusctl")
+assert.equal(M.serviceInstallPkgCommand("supergfxd"), "omarchy-pkg-aur-add supergfxctl")
+assert.equal(M.serviceInstallPkgCommand("nvidiaPowerd"), "omarchy-pkg-add nvidia-utils")
+assert.equal(M.serviceInstallPkgCommand("nope"), "")
+assert.deepEqual(M.serviceInstallCommand("asusd"), ["omarchy-launch-tui", "bash", "-c",
+    "omarchy-pkg-add asusctl && sudo systemctl enable --now asusd.service; omarchy-show-done $?"])
+assert.deepEqual(M.serviceInstallCommand("supergfxd"), ["omarchy-launch-tui", "bash", "-c",
+    "omarchy-pkg-aur-add supergfxctl && sudo systemctl enable --now supergfxd.service; omarchy-show-done $?"])
+assert.equal(M.serviceInstallCommand("nope"), null)
+assert.equal(M.serviceInstallLabel("supergfxd"), "Install supergfxctl")
+assert.equal(M.serviceInstallLabel("nope"), "Install", "no package name to spell out")
+// The panel reads this flag to keep the NVIDIA offer off a laptop without NVIDIA
+// hardware, since that package is the driver itself.
+assert.equal(M.serviceUnits[2].nvidia, true)
+assert.equal(M.serviceUnit("asusd").source, "repo")
+assert.equal(M.serviceUnit("supergfxd").source, "aur")
+assert.equal(M.serviceUnit("nvidiaPowerd").unit, "nvidia-powerd.service")
+assert.equal(M.serviceUnit("nope"), null)
+assert.ok(M.serviceInstallScript("asusd").indexOf("sudo systemctl enable --now asusd.service") >= 0)
+assert.equal(M.serviceInstallScript("nope"), "")
+assert.equal(M.serviceInstallScript("asusd").indexOf("omarchy-launch-tui"), -1, "the launcher belongs to the command, not the script")
+
 console.log("ok - all Model.js checks passed")
