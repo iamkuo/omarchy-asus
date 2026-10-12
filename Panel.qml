@@ -211,6 +211,12 @@ Panel {
     // tick like everything else. `kind` is "intel", "amd" or "none"; "none"
     // hides the control, since a machine with neither file has no switch.
     property var turbo: ({ kind: "none", enabled: false, available: false })
+    // Distinguishes "not probed yet" from "probed, no switch here" — without it a
+    // mode switch on a laptop with no boost file would re-probe forever.
+    property bool turboLoaded: false
+    // A mode switch can happen from the bar with the panel closed, before the
+    // first probe has landed. The mode is parked here and applied when it does.
+    property string pendingBoostMode: ""
     // Services the panel's controls depend on: asusd, supergfxd, nvidia-powerd.
     // One systemctl round trip fills all three (see serviceStatusCommand).
     property var services: ({})
@@ -365,26 +371,27 @@ Panel {
         if (!serviceProc.running) serviceProc.running = true
     }
 
-    // Switching mode also applies that mode's own default refresh rate.
+    // Switching mode also applies that mode's own refresh rate and boost plan.
     function setProfile(p) {
         if (!p || actionProc.running) return
         actionProc.command = Model.profileCommand(p, UPower.onBattery)
         actionProc.running = true
         applyProfileRefresh(p)
+        applyProfileBoost(p)
     }
     function cycleProfile(d) { profileIndex = Model.selectProfileIndex(profileIndex, d, profiles); setProfile(profiles[profileIndex]) }
 
     // CPU boost. asusctl has no equivalent and the sysfs flag is root-owned, so
     // the switch is applied optimistically and put back if pkexec was cancelled
     // (exit 126/127) or the write failed — see turboWriteProc.
-    function toggleTurbo() {
-        if (!root.turbo.available || turboWriteProc.running) return
-        var on = !root.turbo.enabled
+    function setTurbo(on) {
+        if (!root.turbo.available || turboWriteProc.running || on === root.turbo.enabled) return
         turboWriteProc.prevEnabled = root.turbo.enabled
         root.turbo = { kind: root.turbo.kind, enabled: on, available: true }
         turboWriteProc.command = Model.turboSetCommand(root.turbo.kind, on)
         turboWriteProc.running = true
     }
+    function toggleTurbo() { setTurbo(!root.turbo.enabled) }
 
     // The map is rebuilt rather than mutated so the bindings that read
     // root.services re-evaluate.
@@ -535,6 +542,36 @@ Panel {
         persistProc.command = ["omarchy", "bar", "set", moduleName, "refresh" + root.profileKeyFor(name), String(value)]
         persistProc.running = true
         if (name === root.currentProfile && String(value) !== "Auto" && root.monitor) setRefreshRate(Number(value))
+    }
+
+    // Each performance mode also carries its own CPU boost setting, the way
+    // G-Helper stores it per mode, applied when the mode is switched to. Stored
+    // as boostQuiet/boostBalanced/boostPerformance in shell.json. "Auto" leaves
+    // whatever is set now alone, so a mode that does not care about boost never
+    // fights the toggle above.
+    function profileBoostFor(name) { return String(setting("boost" + root.profileKeyFor(name), "Auto")) }
+    function applyProfileBoost(name) {
+        var want = root.profileBoostFor(name)
+        if (want === "Auto") { root.pendingBoostMode = ""; return }
+        // The switch has to be read before it can be written (kind decides the
+        // path and the polarity). If the probe has not landed yet — a mode
+        // switch from the bar with the panel closed — park the mode and apply it
+        // when it does; on a laptop with no boost file the parked mode is
+        // dropped instead of re-probing forever.
+        if (!root.turboLoaded) {
+            root.pendingBoostMode = name
+            if (!turboProc.running) turboProc.running = true
+            return
+        }
+        if (!root.turbo.available) return
+        setTurbo(want === "On")
+    }
+    function setProfileBoost(name, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "boost" + root.profileKeyFor(name), String(value)]
+        persistProc.running = true
+        // Editing the plan for the mode in use applies it straight away; the
+        // others take effect when you switch to them.
+        if (name === root.currentProfile) applyProfileBoost(name)
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -1257,7 +1294,7 @@ Panel {
                     // CPU BOOST — a sysfs flag rather than a firmware attribute,
                     // so it sits outside the "Defaults" group above, and it is
                     // hidden entirely on a machine with no boost switch.
-                    Column { visible: root.turbo.available; width: parent.width; spacing: Style.space(4)
+                    Column { visible: root.turbo.available; width: parent.width; spacing: Style.space(6)
                         PanelSeparator { foreground: root.bar.foreground }
                         PanelSectionHeader { text: "CPU BOOST"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
                         Toggle {
@@ -1271,6 +1308,44 @@ Panel {
                             property bool tipHovered: false
                             onHovered: function(h) { turboToggle.tipHovered = h }
                             PanelToolTip { visible: turboToggle.tipHovered; text: "asusctl exposes no boost switch, so this writes " + Model.turboPath(root.turbo.kind) + "\nthrough pkexec. Turning it off lowers peak and sustained\ntemperatures at the cost of burst performance.\nNeeds the polkit rule from the README, otherwise the prompt\nis cancelled and nothing changes." }
+                        }
+                        // BOOST PER MODE — G-Helper stores CPU boost per
+                        // performance mode and applies it on the switch, so each
+                        // mode gets its own choice here. Auto leaves the current
+                        // state alone, so a mode that does not care about boost
+                        // never fights the toggle above.
+                        Column { width: parent.width; spacing: Style.space(6)
+                            Text { width: parent.width; text: "Each performance mode carries its own boost setting, applied when you switch to that mode. Auto leaves boost as it is."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                            Repeater {
+                                model: root.profiles
+                                Column {
+                                    id: boostBlock
+                                    required property var modelData
+                                    width: parent.width; spacing: Style.space(3)
+                                    Text { text: String(boostBlock.modelData) + (root.currentProfile === boostBlock.modelData ? " •" : ""); color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                    Row { id: boostRow; width: parent.width; spacing: Style.space(4)
+                                        readonly property real cw: (width - spacing * 2) / 3
+                                        Repeater {
+                                            model: ["Auto", "On", "Off"]
+                                            Button {
+                                                required property string modelData
+                                                width: boostRow.cw
+                                                text: modelData
+                                                tooltipText: modelData === "Auto"
+                                                    ? "Leave boost as it is when switching to " + String(boostBlock.modelData) + "."
+                                                    : "Turn CPU boost " + modelData.toLowerCase() + " when you switch to " + String(boostBlock.modelData) + "."
+                                                fontSize: Style.font.caption
+                                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                                horizontalPadding: Style.spacing.controlPaddingX
+                                                verticalPadding: Style.spacing.controlPaddingY
+                                                bordered: true
+                                                active: root.profileBoostFor(String(boostBlock.modelData)) === modelData
+                                                onClicked: root.setProfileBoost(String(boostBlock.modelData), modelData)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     // SERVICES — the daemons these controls depend on. A stopped
@@ -1430,7 +1505,13 @@ Panel {
     Process { id: hyprmoncfgSaveProc; onExited: function() { if (!monitorProc.running) monitorProc.running = true } }
     Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text); if (root.oneshotPlan && root.sensors.batPct >= root.oneshotPlan.target) root.stopOneshot() } } }
     // CPU boost switch — sysfs, so it is probed separately from asusctl.
-    Process { id: turboProc; command: Model.turboCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.turbo = Model.parseTurbo(text) } } }
+    Process { id: turboProc; command: Model.turboCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: {
+        root.turbo = Model.parseTurbo(text)
+        root.turboLoaded = true
+        // A mode switch that arrived before this first read (bar scroll with the
+        // panel closed) is applied now that the kind and polarity are known.
+        if (root.pendingBoostMode !== "") { var m = root.pendingBoostMode; root.pendingBoostMode = ""; root.applyProfileBoost(m) }
+    } } }
     // Optimistic write: a cancelled pkexec prompt (126/127) or any other failure
     // puts the old value back and says why. On success the next refresh confirms
     // the new one.

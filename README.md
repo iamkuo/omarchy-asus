@@ -58,10 +58,12 @@ that.
   (`asusctl profile tuning true`); asusd stores the values either way.
 - **CPU boost** (Advanced) — a Turbo Boost on/off switch, the one thermal lever
   `asusctl` does not expose: it writes `intel_pstate/no_turbo` on Intel and
-  `cpufreq/boost` on AMD. Both files are root-owned, so the switch needs the
-  one-time [polkit rule](#privileges); without it you get a password prompt per
-  change, and cancelling leaves the setting alone and says so. The row hides
-  itself on a laptop that exposes neither file.
+  `cpufreq/boost` on AMD, plus a per-mode plan (Quiet/Balanced/Performance) that
+  applies when you switch modes, the way G-Helper stores it. Both files are
+  root-owned, so the switch needs the one-time [polkit rule](#privileges);
+  without it you get a password prompt per change, and cancelling leaves the
+  setting alone and says so. The section hides itself on a laptop that exposes
+  neither file.
 - **Services** (Advanced) — `asusd`, `supergfxd` and `nvidia-powerd` with their
   current state, since a stopped daemon is the usual reason a control in this
   panel does nothing. `nvidia-powerd` also gets an enable/disable switch, shown
@@ -105,6 +107,21 @@ on the Main tab). Switching to a mode applies that mode's rate, so the screen
 follows the mode. Stored as `refreshQuiet`/`refreshBalanced`/`refreshPerformance`
 (`Auto`, or one of the Hz values the internal panel offers). Since plug/unplug
 just switches the mode, it applies that mode's rate too.
+
+### CPU boost per mode
+
+Each performance mode also carries its own CPU boost setting, the way G-Helper
+stores it (**CPU BOOST** on the Advanced tab). Switching to a mode applies that
+mode's setting, so boost follows the mode — including when the switch comes from
+plugging or unplugging the charger, or from scrolling the bar icon. Stored as
+`boostQuiet`/`boostBalanced`/`boostPerformance` (`Auto`, `On`, `Off`); `Auto`
+leaves boost as it is, so a mode that does not care about boost never fights the
+toggle above it.
+
+The flag has to be read before it can be written, since the CPU vendor decides
+both the path and the polarity (`no_turbo` is inverted against `cpufreq/boost`),
+so a mode switch made from the bar with the panel closed parks that mode and
+applies it as soon as the first probe lands.
 
 ### Screen refresh rate
 
@@ -181,6 +198,9 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 | `refreshQuiet` | string | `Auto` | Refresh rate to apply when switching to Quiet (`Auto`, or a Hz value the internal panel offers) |
 | `refreshBalanced` | string | `Auto` | Refresh rate to apply when switching to Balanced |
 | `refreshPerformance` | string | `Auto` | Refresh rate to apply when switching to Performance |
+| `boostQuiet` | enum | `Auto` | CPU boost to apply when switching to Quiet (`Auto`, `On`, `Off`) |
+| `boostBalanced` | enum | `Auto` | CPU boost to apply when switching to Balanced |
+| `boostPerformance` | enum | `Auto` | CPU boost to apply when switching to Performance |
 
 ## Privileges
 

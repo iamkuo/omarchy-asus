@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.moneytosms.asus",
   "name": "ASUS",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "author": "iamkuo",
   "license": "MIT",
   "homepage": "https://github.com/iamkuo/omarchy-asus",
@@ -27,7 +27,10 @@
       "defaultProfileBattery": "Auto",
       "refreshQuiet": "Auto",
       "refreshBalanced": "Auto",
-      "refreshPerformance": "Auto"
+      "refreshPerformance": "Auto",
+      "boostQuiet": "Auto",
+      "boostBalanced": "Auto",
+      "boostPerformance": "Auto"
     },
     "schema": [
       {
