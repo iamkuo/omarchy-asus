@@ -218,4 +218,60 @@ assert.equal(M.serializeFanPoints(pts), "30c:1%,49c:2%,60c:40%")
 const moved = M.moveFanPoint(pts, 0, 200, -5)
 assert.deepEqual(moved[moved.length - 1], { temp: 100, speed: 0 })
 
+// ---------------------------------------------------------------- cpu boost
+// Intel and AMD invert each other: no_turbo 0 = boost on, cpufreq/boost 1 = on.
+assert.deepEqual(M.parseTurbo("kind=intel\nraw=0"), { kind: "intel", enabled: true, available: true })
+assert.deepEqual(M.parseTurbo("kind=intel\nraw=1"), { kind: "intel", enabled: false, available: true })
+assert.deepEqual(M.parseTurbo("kind=amd\nraw=1"), { kind: "amd", enabled: true, available: true })
+assert.deepEqual(M.parseTurbo("kind=amd\nraw=0"), { kind: "amd", enabled: false, available: true })
+assert.deepEqual(M.parseTurbo("kind=none"), { kind: "none", enabled: false, available: false })
+assert.deepEqual(M.parseTurbo(""), { kind: "none", enabled: false, available: false })
+// An unreadable file gives an empty value, which must not read as "on".
+assert.equal(M.parseTurbo("kind=intel\nraw=").enabled, false)
+assert.equal(M.turboPath("intel"), "/sys/devices/system/cpu/intel_pstate/no_turbo")
+assert.equal(M.turboPath("amd"), "/sys/devices/system/cpu/cpufreq/boost")
+// The value is inverted per vendor, and the write goes through pkexec tee so a
+// polkit rule has one exact program to match.
+const turboCmd = ["sh", "-c", 'printf %s "$1" | pkexec tee "$2" > /dev/null', "sh"]
+assert.deepEqual(M.turboSetCommand("intel", true), turboCmd.concat(["0", M.turboPath("intel")]))
+assert.deepEqual(M.turboSetCommand("intel", false), turboCmd.concat(["1", M.turboPath("intel")]))
+assert.deepEqual(M.turboSetCommand("amd", true), turboCmd.concat(["1", M.turboPath("amd")]))
+assert.deepEqual(M.turboSetCommand("amd", false), turboCmd.concat(["0", M.turboPath("amd")]))
+
+// ---------------------------------------------------------------- services
+// `is-active` alone cannot tell "installed but stopped" from "not installed",
+// so the probe reports LoadState alongside it and presence is read from that.
+const SERVICES = `asusd.service load=loaded active=active
+supergfxd.service load=loaded active=inactive
+nvidia-powerd.service load=not-found active=inactive
+`
+const svc = M.parseServiceStatus(SERVICES)
+assert.deepEqual(svc.asusd, { load: "loaded", active: "active" })
+assert.deepEqual(svc.supergfxd, { load: "loaded", active: "inactive" })
+assert.deepEqual(svc.nvidiaPowerd, { load: "not-found", active: "inactive" })
+assert.equal(M.servicePresent(svc.asusd), true)
+assert.equal(M.serviceActive(svc.asusd), true)
+assert.equal(M.serviceActive(svc.supergfxd), false)
+assert.equal(M.servicePresent(svc.nvidiaPowerd), false)
+assert.equal(M.serviceStateLabel(svc.asusd), "running")
+assert.equal(M.serviceStateLabel(svc.supergfxd), "stopped")
+assert.equal(M.serviceStateLabel(svc.nvidiaPowerd), "not installed")
+assert.equal(M.serviceStateLabel(M.parseServiceStatus("asusd.service load=loaded active=failed").asusd), "failed")
+// A read that has not happened yet must not look like "not installed", or the
+// section would flash "not installed" before the first result lands.
+assert.equal(M.servicePresent(undefined), false)
+assert.deepEqual(M.parseServiceStatus("").asusd, { load: "", active: "" })
+assert.equal(M.servicePresent(M.parseServiceStatus("").asusd), false)
+assert.deepEqual(M.nvidiaPowerdSetCommand(true),
+    ["pkexec", "systemctl", "enable", "--now", "nvidia-powerd.service"])
+assert.deepEqual(M.nvidiaPowerdSetCommand(false),
+    ["pkexec", "systemctl", "disable", "--now", "nvidia-powerd.service"])
+// The unit list is what both the probe and the panel iterate.
+assert.deepEqual(M.serviceUnits.map(function(s) { return s.unit }),
+    ["asusd.service", "supergfxd.service", "nvidia-powerd.service"])
+assert.ok(M.serviceStatusCommand()[2].indexOf("systemctl show -p LoadState --value") >= 0)
+// The panel renders the first two as read-only chips and nvidia-powerd as a
+// switch, so the slice has to keep those two first.
+assert.deepEqual(M.serviceUnits.slice(0, 2).map(function(s) { return s.id }), ["asusd", "supergfxd"])
+
 console.log("ok - all Model.js checks passed")

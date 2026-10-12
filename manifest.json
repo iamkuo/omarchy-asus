@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "io.github.moneytosms.asus",
   "name": "ASUS",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "author": "iamkuo",
   "license": "MIT",
   "homepage": "https://github.com/iamkuo/omarchy-asus",
-  "description": "G-Helper-style ASUS laptop control — live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, editable fan curves, firmware power limits, and per-zone aura power — from the Omarchy bar",
+  "description": "G-Helper-style ASUS laptop control — live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, editable fan curves, firmware power limits, CPU boost, daemon status, and per-zone aura power — from the Omarchy bar",
   "kinds": [
     "bar-widget"
   ],
@@ -15,9 +15,9 @@
   },
   "barWidget": {
     "displayName": "ASUS",
-    "description": "Live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, fan curves, and battery charge limit for ASUS ROG/TUF laptops",
+    "description": "Live temps and fan speeds, performance and GPU modes, screen refresh, keyboard RGB, fan curves, CPU boost, daemon status, and battery charge limit for ASUS ROG/TUF laptops",
     "category": "System",
-    "aliases": ["asus", "rog", "tuf", "aura", "fan", "rgb", "lighting", "gpu", "temp", "ghelper"],
+    "aliases": ["asus", "rog", "tuf", "aura", "fan", "rgb", "lighting", "gpu", "temp", "turbo", "boost", "services", "ghelper"],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
