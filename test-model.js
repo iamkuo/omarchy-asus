@@ -263,9 +263,9 @@ assert.equal(M.servicePresent(undefined), false)
 assert.deepEqual(M.parseServiceStatus("").asusd, { load: "", active: "" })
 assert.equal(M.servicePresent(M.parseServiceStatus("").asusd), false)
 assert.deepEqual(M.nvidiaPowerdSetCommand(true),
-    ["pkexec", "systemctl", "enable", "--now", "nvidia-powerd.service"])
+    ["pkexec", "sh", "-c", "systemctl reset-failed nvidia-powerd.service 2>/dev/null; systemctl enable --now nvidia-powerd.service"])
 assert.deepEqual(M.nvidiaPowerdSetCommand(false),
-    ["pkexec", "systemctl", "disable", "--now", "nvidia-powerd.service"])
+    ["pkexec", "sh", "-c", "systemctl reset-failed nvidia-powerd.service 2>/dev/null; systemctl disable --now nvidia-powerd.service"])
 // The unit list is what both the probe and the panel iterate.
 assert.deepEqual(M.serviceUnits.map(function(s) { return s.unit }),
     ["asusd.service", "supergfxd.service", "nvidia-powerd.service"])
