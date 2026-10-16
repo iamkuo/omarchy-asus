@@ -204,6 +204,9 @@ Panel {
         property string fontFamily: "monospace"
         property bool hasCursor: false
         property int rowHeight: Style.space(30)
+        // The panel's Flickable: its height is the visible viewport, used to tell
+        // how much room is left below the trigger so the popup can flip up.
+        property var viewport: null
         readonly property bool popupOpen: popup.opened
         signal changed(string value)
         signal hovered(bool isHovered)
@@ -271,18 +274,14 @@ Panel {
                     onClicked: popup.opened ? popup.close() : popup.open()
                 }
 
-                readonly property var win: trigger.QsWindow ? trigger.QsWindow.window : null
-                readonly property real winH: win ? win.height : 0
-                readonly property real sceneY: trigger.mapToItem(null, 0, 0).y
-
                 Popup {
                     id: popup
                     readonly property real listH: Math.min(fd.options.length * fd.rowHeight + Math.max(0, fd.options.length - 1) * Style.space(2) + Style.space(2),
                                                            fd.rowHeight * 8 + 7 * Style.space(2) + Style.space(2))
                     x: 0
-                    // Flip above when the space below the trigger is too small.
-                    y: (trigger.winH > 0 && (trigger.winH - (trigger.sceneY + trigger.height)) < listH + Style.space(2))
-                       ? -(listH + Style.space(2)) : trigger.height + Style.space(2)
+                    // Positioned when it opens (mapToItem is not a tracked
+                    // binding dependency, so this can't be a `y:` binding).
+                    y: trigger.height + Style.space(2)
                     width: trigger.width
                     implicitHeight: listH
                     padding: 1
@@ -292,6 +291,14 @@ Panel {
                         radius: Style.cornerRadius
                         border.width: 1
                         border.color: Qt.rgba(fd.foreground.r, fd.foreground.g, fd.foreground.b, 0.25)
+                    }
+                    // Flip above the trigger when there is not enough room below,
+                    // measured against the panel's Flickable viewport.
+                    onAboutToShow: {
+                        var vp = fd.viewport
+                        var h = vp && vp.height > 0 ? vp.height : 0
+                        var below = h > 0 ? h - (trigger.mapToItem(vp, 0, 0).y + trigger.height) : 1e9
+                        popup.y = below < listH + Style.space(2) ? -(listH + Style.space(2)) : trigger.height + Style.space(2)
                     }
                     onOpened: { optionList.currentIndex = Math.max(0, optionList.indexOfValue(fd.value)); optionList.forceActiveFocus() }
                     contentItem: ListView {
@@ -334,7 +341,7 @@ Panel {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onPositionChanged: optionList.currentIndex = parent.index
-                                onClicked: optionList.selectCurrent()
+                                onClicked: { optionList.currentIndex = index; optionList.selectCurrent() }
                             }
                         }
                     }
@@ -1540,6 +1547,7 @@ Panel {
                         Text { width: parent.width; text: "What closing the lid does, and how long a suspend waits before hibernating. Plans can override these."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                         FlipDropdown {
                             id: globalLidDropdown
+                            viewport: flick
                             width: parent.width
                             label: "Lid action"
                             value: root.globalLidValue()
@@ -1569,6 +1577,7 @@ Panel {
                         Text { width: parent.width; text: "Pick a plan to edit everything it carries. The settings apply when you switch to that plan."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                         FlipDropdown {
                             id: planDropdown
+                            viewport: flick
                             width: parent.width
                             label: "Plan"
                             value: root.plan
@@ -1673,6 +1682,7 @@ Panel {
                             Text { text: "Lid action"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                             FlipDropdown {
                                 id: planLidDropdown
+                                viewport: flick
                                 width: parent.width
                                 value: root.lidFor(root.plan)
                                 options: Model.lidActions.map(function(a) { return ({ value: a, label: Model.lidActionLabel(a) }) })
