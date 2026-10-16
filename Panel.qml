@@ -673,9 +673,11 @@ Panel {
         if (name === root.currentProfile)
             root.applyLidValues(root.effectiveLid(name), String(value) !== "auto" ? String(value) : root.globalHibValue())
     }
-    // Hibernate delay ("auto" or e.g. "60min") as slider minutes + a label.
-    function hibValueMinutes(state) { return state === "auto" ? 60 : (parseInt(state) || 60) }
-    function hibValueLabel(state) { return state === "auto" ? "Auto" : (parseInt(state) || 60) + " min" }
+    // Hibernate delay ("auto", e.g. "60min", or "infinity" = never hibernate) as
+    // slider minutes + a label. The right-most slider position is "Never".
+    function hibValueMinutes(state) { return state === "auto" ? 60 : (state === "infinity" ? 180 : (parseInt(state) || 60)) }
+    function hibValueLabel(state) { return state === "auto" ? "Auto" : (state === "infinity" ? "Never" : (parseInt(state) || 60) + " min") }
+    function hibValueFromSlider(v) { return Math.round(v) >= 180 ? "infinity" : Math.round(v) + "min" }
 
     // Fan curves — every write is gated on profileLoaded so an action never
     // silently lands on the wrong (hardcoded "Balanced") profile because the
@@ -1278,7 +1280,7 @@ Panel {
                                 MouseArea { id: pl1Help; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: pl1Help.containsMouse; text: Model.armouryTips.ppt_pl1_spl }
                             }
-                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.pptPl1Min; maximum: root.pptPl1Max; step: 1; integer: true; value: root.pptPl1; onReleased: function(v) { root.setPptPl1(v) } }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2 - Style.space(48); bar: root.bar; minimum: root.pptPl1Min; maximum: root.pptPl1Max; step: 1; integer: true; value: root.pptPl1; onReleased: function(v) { root.setPptPl1(v) } }
                             Text { text: root.pptPl1 + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                         Row { visible: root.armourySupported.pptPl2; width: parent.width; spacing: Style.space(4)
@@ -1286,7 +1288,7 @@ Panel {
                                 MouseArea { id: pl2Help; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: pl2Help.containsMouse; text: Model.armouryTips.ppt_pl2_sppt }
                             }
-                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.pptPl2Min; maximum: root.pptPl2Max; step: 1; integer: true; value: root.pptPl2; onReleased: function(v) { root.setPptPl2(v) } }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2 - Style.space(48); bar: root.bar; minimum: root.pptPl2Min; maximum: root.pptPl2Max; step: 1; integer: true; value: root.pptPl2; onReleased: function(v) { root.setPptPl2(v) } }
                             Text { text: root.pptPl2 + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                         Row { visible: root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(4)
@@ -1294,7 +1296,7 @@ Panel {
                                 MouseArea { id: pl3Help; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: pl3Help.containsMouse; text: Model.armouryTips.ppt_pl3_fppt }
                             }
-                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.pptPl3Min; maximum: root.pptPl3Max; step: 1; integer: true; value: root.pptPl3; onReleased: function(v) { root.setPptPl3(v) } }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2 - Style.space(48); bar: root.bar; minimum: root.pptPl3Min; maximum: root.pptPl3Max; step: 1; integer: true; value: root.pptPl3; onReleased: function(v) { root.setPptPl3(v) } }
                             Text { text: root.pptPl3 + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                     }
@@ -1305,7 +1307,7 @@ Panel {
                                 MouseArea { id: boostHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: boostHelp.containsMouse; text: Model.armouryTips.nv_dynamic_boost }
                             }
-                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.nvDynBoostMin; maximum: root.nvDynBoostMax; step: 1; integer: true; value: root.nvDynBoost; onReleased: function(v) { root.setNvDynBoost(v) } }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2 - Style.space(48); bar: root.bar; minimum: root.nvDynBoostMin; maximum: root.nvDynBoostMax; step: 1; integer: true; value: root.nvDynBoost; onReleased: function(v) { root.setNvDynBoost(v) } }
                             Text { text: root.nvDynBoost + "W"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                         Row { visible: root.armourySupported.nvTempTarget; width: parent.width; spacing: Style.space(4)
@@ -1313,7 +1315,7 @@ Panel {
                                 MouseArea { id: tempHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                                 PanelToolTip { visible: tempHelp.containsMouse; text: Model.armouryTips.nv_temp_target }
                             }
-                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.nvTempTargetMin; maximum: root.nvTempTargetMax; step: 1; integer: true; value: root.nvTempTarget; onReleased: function(v) { root.setNvTempTarget(v) } }
+                            PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2 - Style.space(48); bar: root.bar; minimum: root.nvTempTargetMin; maximum: root.nvTempTargetMax; step: 1; integer: true; value: root.nvTempTarget; onReleased: function(v) { root.setNvTempTarget(v) } }
                             Text { text: root.nvTempTarget + "°C"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                         }
                     }
@@ -1397,7 +1399,7 @@ Panel {
                                 readonly property string state: root.globalHibValue()
                                 readonly property bool auto: state === "auto"
                                 Button { width: Style.space(40); text: "Auto"; active: globalHibRow.auto; tooltipText: globalHibRow.auto ? "Auto — leave the hibernate delay at systemd's default. Click for a fixed value." : "Click to leave the hibernate delay at systemd's default."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setHibDelay(globalHibRow.auto ? "60min" : "auto") }
-                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(globalHibRow.state); onReleased: function(v) { root.setHibDelay(Math.round(v) + "min") } }
+                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(globalHibRow.state); onReleased: function(v) { root.setHibDelay(root.hibValueFromSlider(v)) } }
                                 Text { text: root.hibValueLabel(globalHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                             }
                         }
@@ -1488,7 +1490,7 @@ Panel {
                                     readonly property int shown: auto ? cpuLimitRow.modelData.fallback : Number(state)
                                     Text { text: cpuLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
                                     Button { width: Style.space(40); text: "Auto"; active: cpuLimitRow.auto; tooltipText: (cpuLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + cpuLimitRow.modelData.label + (cpuLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, cpuLimitRow.modelData.key, cpuLimitRow.modelData.fallback) }
-                                    PanelSlider { width: cpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: cpuLimitRow.modelData.minimum; maximum: cpuLimitRow.modelData.maximum; step: 1; integer: true; value: cpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, cpuLimitRow.modelData.key, Math.round(v)) } }
+                                    PanelSlider { width: cpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3 - Style.space(48); bar: root.bar; minimum: cpuLimitRow.modelData.minimum; maximum: cpuLimitRow.modelData.maximum; step: 1; integer: true; value: cpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, cpuLimitRow.modelData.key, Math.round(v)) } }
                                     Text { text: cpuLimitRow.auto ? "Auto" : cpuLimitRow.shown + cpuLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                                 }
                             }
@@ -1507,7 +1509,7 @@ Panel {
                                     readonly property int shown: auto ? gpuLimitRow.modelData.fallback : Number(state)
                                     Text { text: gpuLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
                                     Button { width: Style.space(40); text: "Auto"; active: gpuLimitRow.auto; tooltipText: (gpuLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + gpuLimitRow.modelData.label + (gpuLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, gpuLimitRow.modelData.key, gpuLimitRow.modelData.fallback) }
-                                    PanelSlider { width: gpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: gpuLimitRow.modelData.minimum; maximum: gpuLimitRow.modelData.maximum; step: 1; integer: true; value: gpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, gpuLimitRow.modelData.key, Math.round(v)) } }
+                                    PanelSlider { width: gpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3 - Style.space(48); bar: root.bar; minimum: gpuLimitRow.modelData.minimum; maximum: gpuLimitRow.modelData.maximum; step: 1; integer: true; value: gpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, gpuLimitRow.modelData.key, Math.round(v)) } }
                                     Text { text: gpuLimitRow.auto ? "Auto" : gpuLimitRow.shown + gpuLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                                 }
                             }
@@ -1530,7 +1532,7 @@ Panel {
                                 readonly property string state: root.hibFor(root.plan)
                                 readonly property bool auto: state === "auto"
                                 Button { width: Style.space(40); text: "Auto"; active: planHibRow.auto; tooltipText: planHibRow.auto ? "Auto — use the global hibernate delay for " + root.plan + ". Click for a fixed value." : "Click to use the global hibernate delay for " + root.plan + "."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setPlanHib(root.plan, planHibRow.auto ? "60min" : "auto") }
-                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(planHibRow.state); onReleased: function(v) { root.setPlanHib(root.plan, Math.round(v) + "min") } }
+                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(planHibRow.state); onReleased: function(v) { root.setPlanHib(root.plan, root.hibValueFromSlider(v)) } }
                                 Text { text: root.hibValueLabel(planHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                             }
                         }

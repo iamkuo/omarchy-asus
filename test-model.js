@@ -322,6 +322,9 @@ assert.ok(lidCmd[3].indexOf("suspend-then-hibernate") >= 0)
 assert.ok(lidCmd[3].indexOf("HibernateDelaySec=%s") >= 0)
 assert.ok(lidCmd[3].indexOf("60min") >= 0)
 assert.ok(lidCmd[3].indexOf("systemctl kill -s HUP systemd-logind") >= 0)
+// The right-most hibernate slider position is "Never" -> HibernateDelaySec=infinity.
+assert.ok(M.lidApplyCommand("suspend-then-hibernate", "infinity")[3].indexOf("HibernateDelaySec=%s") >= 0)
+assert.ok(M.lidApplyCommand("suspend-then-hibernate", "infinity")[3].indexOf("infinity") >= 0)
 // "auto" removes the drop-ins rather than writing them.
 const lidAuto = M.lidApplyCommand("auto", "auto")
 assert.ok(lidAuto[3].indexOf("rm -f /etc/systemd/logind.conf.d/50-asus-lid.conf") >= 0)

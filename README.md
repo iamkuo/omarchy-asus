@@ -142,8 +142,10 @@ sets the system-wide value, written as drop-ins
 `/etc/systemd/sleep.conf.d/50-asus-hibernate.conf`) followed by a logind reload
 — Omarchy's own config is left untouched. The global lid action is
 `Suspend` (systemd's default), `Suspend then hibernate`, `Hibernate`, `Lock`,
-`Do nothing` or `Power off`; the delay is a slider (`Auto` = leave it unset, or
-15–180 minutes).
+`Do nothing` or `Power off`; the delay is a slider (`Auto` = leave it unset,
+15–165 minutes, or the right-most position **Never**, which writes
+`HibernateDelaySec=infinity` so a suspend-then-hibernate lid action never
+hibernates).
 
 Both the global and per-plan controls need root, so add the polkit rule in
 [Privileges](#privileges) or you will authenticate on each change. Under the
