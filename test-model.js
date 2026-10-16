@@ -308,4 +308,22 @@ assert.ok(M.serviceInstallScript("asusd").indexOf("sudo systemctl enable --now a
 assert.equal(M.serviceInstallScript("nope"), "")
 assert.equal(M.serviceInstallScript("asusd").indexOf("omarchy-launch-tui"), -1, "the launcher belongs to the command, not the script")
 
+// ---------------------------------------------------------------- lid/hibernate
+assert.deepEqual(M.lidActions.slice(0, 3), ["auto", "suspend", "suspend-then-hibernate"])
+assert.equal(M.lidActionLabel("ignore"), "Do nothing")
+assert.equal(M.lidActionLabel("bogus"), "Auto")
+assert.equal(M.hibernateDelayLabel("60min"), "1h")
+const lidCmd = M.lidApplyCommand("suspend-then-hibernate", "60min")
+assert.deepEqual(lidCmd.slice(0, 2), ["pkexec", "sh"])
+assert.ok(lidCmd[3].indexOf("HandleLidSwitch=%s") >= 0)
+assert.ok(lidCmd[3].indexOf("suspend-then-hibernate") >= 0)
+assert.ok(lidCmd[3].indexOf("HibernateDelaySec=%s") >= 0)
+assert.ok(lidCmd[3].indexOf("60min") >= 0)
+assert.ok(lidCmd[3].indexOf("systemctl kill -s HUP systemd-logind") >= 0)
+// "auto" removes the drop-ins rather than writing them.
+const lidAuto = M.lidApplyCommand("auto", "auto")
+assert.ok(lidAuto[3].indexOf("rm -f /etc/systemd/logind.conf.d/50-asus-lid.conf") >= 0)
+assert.ok(lidAuto[3].indexOf("rm -f /etc/systemd/sleep.conf.d/50-asus-hibernate.conf") >= 0)
+assert.equal(lidAuto[3].indexOf("HandleLidSwitch"), -1)
+
 console.log("ok - all Model.js checks passed")

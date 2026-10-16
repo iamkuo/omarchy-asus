@@ -364,6 +364,10 @@ Panel {
     // asusd already has saved for that source.
     readonly property string defaultProfileAc: String(setting("defaultProfileAc", "Auto"))
     readonly property string defaultProfileBattery: String(setting("defaultProfileBattery", "Auto"))
+    // Last lid/hibernate values actually written, so a plan switch that resolves
+    // to the same values does not re-run the root write. Empty = not applied yet.
+    property string appliedLid: ""
+    property string appliedHib: ""
 
     function refresh() {
         if (!asusctlAvailable) { checkAsusctl.running = true; return }
@@ -388,6 +392,7 @@ Panel {
         actionProc.running = true
         applyProfileRefresh(p)
         applyProfileBoost(p)
+        applyLid(p)
     }
     function cycleProfile(d) { profileIndex = Model.selectProfileIndex(profileIndex, d, profiles); setProfile(profiles[profileIndex]) }
 
@@ -624,6 +629,50 @@ Panel {
             { key: "nvTemp", label: "Temp", unit: "°C", supported: root.armourySupported.nvTempTarget, minimum: root.nvTempTargetMin, maximum: root.nvTempTargetMax, fallback: root.nvTempTarget }
         ]
     }
+
+    // Lid action + hibernate delay. The global value is the base; a plan can
+    // override it (Auto = use the global). Applied as systemd drop-ins through
+    // pkexec (see Model.lidApplyCommand), so it needs the polkit rule in the
+    // README. Skipped when the resolved values are already in effect.
+    function globalLidValue() { return String(setting("lidAction", "auto")) }
+    function globalHibValue() { return String(setting("hibernateDelay", "auto")) }
+    function lidFor(name) { return String(setting("lid" + root.profileKeyFor(name), "auto")) }
+    function hibFor(name) { return String(setting("hib" + root.profileKeyFor(name), "auto")) }
+    function effectiveLid(name) { var v = root.lidFor(name); return v !== "auto" ? v : root.globalLidValue() }
+    function effectiveHib(name) { var v = root.hibFor(name); return v !== "auto" ? v : root.globalHibValue() }
+    function applyLidValues(lid, hib) {
+        if (lid === root.appliedLid && hib === root.appliedHib) return
+        root.appliedLid = lid
+        root.appliedHib = hib
+        lidProc.command = Model.lidApplyCommand(lid, hib)
+        lidProc.running = true
+    }
+    function applyLid(name) { root.applyLidValues(root.effectiveLid(name), root.effectiveHib(name)) }
+    function setLidAction(value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "lidAction", String(value)]
+        persistProc.running = true
+        root.applyLidValues(String(value), root.effectiveHib(root.currentProfile))
+    }
+    function setHibDelay(value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "hibernateDelay", String(value)]
+        persistProc.running = true
+        root.applyLidValues(root.effectiveLid(root.currentProfile), String(value))
+    }
+    function setPlanLid(name, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "lid" + root.profileKeyFor(name), String(value)]
+        persistProc.running = true
+        if (name === root.currentProfile)
+            root.applyLidValues(String(value) !== "auto" ? String(value) : root.globalLidValue(), root.effectiveHib(name))
+    }
+    function setPlanHib(name, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "hib" + root.profileKeyFor(name), String(value)]
+        persistProc.running = true
+        if (name === root.currentProfile)
+            root.applyLidValues(root.effectiveLid(name), String(value) !== "auto" ? String(value) : root.globalHibValue())
+    }
+    // Hibernate delay ("auto" or e.g. "60min") as slider minutes + a label.
+    function hibValueMinutes(state) { return state === "auto" ? 60 : (parseInt(state) || 60) }
+    function hibValueLabel(state) { return state === "auto" ? "Auto" : (parseInt(state) || 60) + " min" }
 
     // Fan curves — every write is gated on profileLoaded so an action never
     // silently lands on the wrong (hardcoded "Balanced") profile because the
@@ -1321,6 +1370,35 @@ Panel {
                             }
                         }
                     }
+                    // LID & HIBERNATE — system-wide systemd settings (logind's
+                    // HandleLidSwitch and sleep.conf's HibernateDelaySec), written
+                    // as drop-ins. Plans below can override them. Needs the polkit
+                    // rule in the README; without it each change prompts.
+                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(6)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "LID & HIBERNATE"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Text { width: parent.width; text: "What closing the lid does, and how long a suspend waits before hibernating. Plans can override these."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                        Dropdown {
+                            id: globalLidDropdown
+                            width: parent.width
+                            label: "Lid action"
+                            value: root.globalLidValue()
+                            options: Model.lidActions.map(function(a) { return ({ value: a, label: Model.lidActionLabel(a) }) })
+                            foreground: root.bar.foreground
+                            fontFamily: root.bar.fontFamily
+                            onChanged: function(v) { root.setLidAction(v) }
+                        }
+                        Column { width: parent.width; spacing: Style.space(3)
+                            Text { text: "Auto hibernate after"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Row { id: globalHibRow; width: parent.width; spacing: Style.space(4)
+                                readonly property string state: root.globalHibValue()
+                                readonly property bool auto: state === "auto"
+                                Button { width: Style.space(40); text: "Auto"; active: globalHibRow.auto; tooltipText: globalHibRow.auto ? "Auto — leave the hibernate delay at systemd's default. Click for a fixed value." : "Click to leave the hibernate delay at systemd's default."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setHibDelay(globalHibRow.auto ? "60min" : "auto") }
+                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(globalHibRow.state); onReleased: function(v) { root.setHibDelay(Math.round(v) + "min") } }
+                                Text { text: root.hibValueLabel(globalHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                        }
+                    }
                     // POWER PLAN — one place to edit everything a single mode
                     // (Quiet/Balanced/Performance) carries. The dropdown picks the
                     // mode; the rows below edit that mode's screen refresh and CPU
@@ -1431,6 +1509,28 @@ Panel {
                                 }
                             }
                         }
+                        Column { width: parent.width; spacing: Style.space(3)
+                            Text { text: "Lid action"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Dropdown {
+                                id: planLidDropdown
+                                width: parent.width
+                                value: root.lidFor(root.plan)
+                                options: Model.lidActions.map(function(a) { return ({ value: a, label: Model.lidActionLabel(a) }) })
+                                foreground: root.bar.foreground
+                                fontFamily: root.bar.fontFamily
+                                onChanged: function(v) { root.setPlanLid(root.plan, v) }
+                            }
+                        }
+                        Column { width: parent.width; spacing: Style.space(3)
+                            Text { text: "Auto hibernate after"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Row { id: planHibRow; width: parent.width; spacing: Style.space(4)
+                                readonly property string state: root.hibFor(root.plan)
+                                readonly property bool auto: state === "auto"
+                                Button { width: Style.space(40); text: "Auto"; active: planHibRow.auto; tooltipText: planHibRow.auto ? "Auto — use the global hibernate delay for " + root.plan + ". Click for a fixed value." : "Click to use the global hibernate delay for " + root.plan + "."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setPlanHib(root.plan, planHibRow.auto ? "60min" : "auto") }
+                                PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(planHibRow.state); onReleased: function(v) { root.setPlanHib(root.plan, Math.round(v) + "min") } }
+                                Text { text: root.hibValueLabel(planHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                        }
                     }
                     // SERVICES — the daemons these controls depend on. A stopped
                     // asusd is the usual reason a control in this panel does
@@ -1487,7 +1587,8 @@ Panel {
             id: keyCatcher
             anchors.fill: parent
             // The power-plan dropdown owns the keys while its popup is open.
-            blocked: planDropdown.popupOpen
+            // Any open dropdown owns the keys while its popup is up.
+            blocked: planDropdown.popupOpen || globalLidDropdown.popupOpen || planLidDropdown.popupOpen
             onCloseRequested: root.close()
             onMoveRequested: function(dx, dy) { if (dy !== 0) flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY - dy * 40)) }
         }
@@ -1509,6 +1610,17 @@ Panel {
     Process { id: ecoMarkerProc }
     // Writes per-source preset choices back into shell.json's widget settings.
     Process { id: persistProc }
+    // Applies the lid action / hibernate delay drop-ins (root write + logind
+    // reload); a cancelled pkexec leaves the previous file in place.
+    Process {
+        id: lidProc
+        onExited: function(ec) {
+            if (ec === 0) return
+            root.showActionError(ec === 126 || ec === 127
+                ? "Lid/hibernate: authorisation cancelled — nothing changed. See the README for the polkit rule."
+                : "Lid/hibernate: write failed (exit " + ec + ").")
+        }
+    }
     Process { id: checkAsusctl; command: ["which", "asusctl"]; onExited: function(ec) { root.asusctlAvailable = ec === 0; if (root.asusctlAvailable) refresh() } }
     Process { id: profileProc; command: ["asusctl", "profile", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { var p = Model.parseCurrentProfile(text); if (p) { root.currentProfile = p; var i = root.profiles.indexOf(p); if (i >= 0) root.profileIndex = i }; root.acProfile = Model.parseProfiles(text); root.profileLoaded = true } } }
     Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.initAuraPowerState(root.supported.auraPowerZones || []); root.infoLoaded = true } } }

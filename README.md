@@ -127,6 +127,28 @@ switching to the plan is what applies its settings. A plan carries:
   button: `Auto` leaves that limit untouched when you switch to the plan, so a
   plan only overrides the limits you set for it. The global sliders above stay
   available for direct, one-off changes.
+- **Lid action / Auto hibernate** — the plan's override for the system-wide
+  lid-close action and suspend-then-hibernate delay
+  (`lidQuiet`/`lidBalanced`/`lidPerformance`, `hibQuiet`/…; `Auto` = use the
+  global value in the **Lid & hibernate** section above).
+
+### Lid action and auto-hibernate
+
+These are not ASUS settings: closing the lid is handled by systemd-logind
+(`HandleLidSwitch`), and the suspend-then-hibernate delay is `HibernateDelaySec`
+in `sleep.conf`. The **Lid & hibernate** section above the Power plan dropdown
+sets the system-wide value, written as drop-ins
+(`/etc/systemd/logind.conf.d/50-asus-lid.conf` and
+`/etc/systemd/sleep.conf.d/50-asus-hibernate.conf`) followed by a logind reload
+— Omarchy's own config is left untouched. Values are `Auto` (remove the drop-in;
+systemd's default, i.e. suspend), `Suspend`, `Suspend then hibernate`,
+`Hibernate`, `Lock`, `Do nothing`, `Power off`, and the delay is `Auto`, `15m`,
+`30m`, `1h` or `2h`.
+
+Both the global and per-plan controls need root, so add the polkit rule in
+[Privileges](#privileges) or you will authenticate on each change. A plan's
+`Auto` resolves to the global value; switching plans only rewrites the drop-in
+when the resolved values actually change.
 
 `Auto` everywhere means "leave it alone", so a plan only changes what you
 configured for it.
@@ -235,11 +257,12 @@ After editing the plugin's own files, rebuild the panel:
 omarchy restart shell
 ```
 
-### 3. Allow the CPU-boost switch without a password (optional)
+### 3. Allow the root-needing controls without a password (optional)
 
-Turbo Boost is the only control that needs root (`intel_pstate/no_turbo` on
-Intel, `cpufreq/boost` on AMD). It works without this, prompting per change;
-add the rule in [Privileges](#privileges) to make it prompt-free.
+Two controls need root: the **Turbo Boost** switch
+(`intel_pstate/no_turbo` / `cpufreq/boost`) and the **Lid action /
+auto-hibernate** drop-ins. Both work without this, prompting per change; add
+the rules in [Privileges](#privileges) to make them prompt-free.
 
 ### 4. Stop nvidia-powerd getting stuck (optional, NVIDIA only)
 
@@ -316,6 +339,24 @@ EOF
 ```
 
 Change the group (`wheel`, `sudo`, …) to match your system.
+
+**Lid action / auto-hibernate.** Those controls write the two drop-ins and
+reload logind through `pkexec sh -c …`, so they prompt per change by default.
+Scope a rule to just those files:
+
+```bash
+sudo tee /etc/polkit-1/rules.d/60-asus-lid.rules > /dev/null <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        /50-asus-(lid|hibernate)\.conf/.test(action.lookup("command_line")) &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+```
+
+Change the group to match your system.
 
 ## Compatibility
 

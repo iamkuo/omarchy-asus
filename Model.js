@@ -832,6 +832,40 @@ function serviceInstallCommand(id) {
 }
 
 // ============================================================
+// Lid action and suspend-then-hibernate delay (systemd)
+// ============================================================
+// Neither is an ASUS setting: the lid-close action is systemd-logind's
+// HandleLidSwitch, and the "auto hibernate" delay is HibernateDelaySec (used
+// when the action is suspend-then-hibernate). Both are written as drop-ins so
+// Omarchy's own logind.conf stays untouched. "auto" removes the drop-in, which
+// leaves systemd's own default in charge.
+var lidActions = ["auto", "suspend", "suspend-then-hibernate", "hibernate", "lock", "ignore", "poweroff"]
+var lidActionLabels = {
+    "auto": "Auto", "suspend": "Suspend", "suspend-then-hibernate": "Suspend then hibernate",
+    "hibernate": "Hibernate", "lock": "Lock", "ignore": "Do nothing", "poweroff": "Power off"
+}
+var hibernateDelays = ["auto", "15min", "30min", "60min", "120min"]
+var hibernateDelayLabels = { "auto": "Auto", "15min": "15m", "30min": "30m", "60min": "1h", "120min": "2h" }
+
+function lidActionLabel(id) { return lidActionLabels[id] || lidActionLabels["auto"] }
+function hibernateDelayLabel(id) { return hibernateDelayLabels[id] || hibernateDelayLabels["auto"] }
+
+function lidApplyCommand(lid, hibernate) {
+    var lidFile = "/etc/systemd/logind.conf.d/50-asus-lid.conf"
+    var hibFile = "/etc/systemd/sleep.conf.d/50-asus-hibernate.conf"
+    var s = "set -e; "
+    s += (lid && lid !== "auto")
+        ? "mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\\nHandleLidSwitch=%s\\nHandleLidSwitchExternalPower=%s\\n' " + lid + " " + lid + " > " + lidFile + "; "
+        : "rm -f " + lidFile + "; "
+    s += (hibernate && hibernate !== "auto")
+        ? "mkdir -p /etc/systemd/sleep.conf.d && printf '[Sleep]\\nHibernateDelaySec=%s\\n' " + hibernate + " > " + hibFile + "; "
+        : "rm -f " + hibFile + "; "
+    // logind re-reads logind.conf on SIGHUP; this does not disturb the session.
+    s += "systemctl kill -s HUP systemd-logind"
+    return ["pkexec", "sh", "-c", s]
+}
+
+// ============================================================
 // Index helpers
 // ============================================================
 function clampIndex(i, l) { return l <= 0 ? 0 : Math.max(0, Math.min(l - 1, i)) }
