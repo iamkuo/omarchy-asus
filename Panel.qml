@@ -225,7 +225,6 @@ Panel {
     property string actionError: ""
     readonly property var nvidiaPowerd: root.services.nvidiaPowerd || ({ load: "", active: "" })
     readonly property bool nvidiaPowerdPresent: Model.servicePresent(root.nvidiaPowerd)
-    readonly property bool nvidiaPowerdActive: Model.serviceActive(root.nvidiaPowerd)
     // nvidia-powerd ships with the driver package, so offering to install it only
     // makes sense where the firmware reports the NVIDIA attributes this panel
     // already reads. On an AMD-only laptop the offer would be noise, and acting
@@ -403,24 +402,6 @@ Panel {
         turboWriteProc.running = true
     }
     function toggleTurbo() { setTurbo(!root.turbo.enabled) }
-
-    // The map is rebuilt rather than mutated so the bindings that read
-    // root.services re-evaluate.
-    function setServiceActive(id, active) {
-        var next = {}
-        for (var k in root.services) next[k] = root.services[k]
-        var cur = root.services[id] || ({ load: "loaded", active: "" })
-        next[id] = { load: cur.load, active: active }
-        root.services = next
-    }
-    function toggleNvidiaPowerd() {
-        if (!root.nvidiaPowerdPresent || powerdWriteProc.running) return
-        var on = !root.nvidiaPowerdActive
-        powerdWriteProc.prevActive = root.nvidiaPowerdActive
-        setServiceActive("nvidiaPowerd", on ? "active" : "inactive")
-        powerdWriteProc.command = Model.nvidiaPowerdSetCommand(on)
-        powerdWriteProc.running = true
-    }
 
     // A missing unit is the one state a button can fix outright. The install runs
     // in Omarchy's own terminal so pacman can prompt for sudo and show what it
@@ -628,11 +609,17 @@ Panel {
         }
         return s
     }
-    function planLimitRows() {
+    // Split the same way the global limits above are, so the plan editor groups
+    // CPU and GPU the same way.
+    function planCpuLimitRows() {
         return [
             { key: "pl1", label: "PL1", unit: "W", supported: root.armourySupported.pptPl1, minimum: root.pptPl1Min, maximum: root.pptPl1Max, fallback: root.pptPl1 },
             { key: "pl2", label: "PL2", unit: "W", supported: root.armourySupported.pptPl2, minimum: root.pptPl2Min, maximum: root.pptPl2Max, fallback: root.pptPl2 },
-            { key: "pl3", label: "PL3", unit: "W", supported: root.armourySupported.pptPl3, minimum: root.pptPl3Min, maximum: root.pptPl3Max, fallback: root.pptPl3 },
+            { key: "pl3", label: "PL3", unit: "W", supported: root.armourySupported.pptPl3, minimum: root.pptPl3Min, maximum: root.pptPl3Max, fallback: root.pptPl3 }
+        ]
+    }
+    function planGpuLimitRows() {
+        return [
             { key: "nvBoost", label: "Boost", unit: "W", supported: root.armourySupported.nvDynBoost, minimum: root.nvDynBoostMin, maximum: root.nvDynBoostMax, fallback: root.nvDynBoost },
             { key: "nvTemp", label: "Temp", unit: "°C", supported: root.armourySupported.nvTempTarget, minimum: root.nvTempTargetMin, maximum: root.nvTempTargetMax, fallback: root.nvTempTarget }
         ]
@@ -1297,6 +1284,43 @@ Panel {
                             PanelToolTip { visible: turboToggle.tipHovered; text: "asusctl exposes no boost switch, so this writes " + Model.turboPath(root.turbo.kind) + "\nthrough pkexec. Turning it off lowers peak and sustained\ntemperatures at the cost of burst performance.\nNeeds the polkit rule from the README, otherwise the prompt\nis cancelled and nothing changes." }
                         }
                     }
+                    // AUTO-SWITCH ON POWER — saves a mode per source and applies it
+                    // when the charger is plugged or unplugged. Persisted in
+                    // shell.json through `omarchy bar set`.
+                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(8)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "AUTO-SWITCH ON POWER"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Repeater {
+                            model: [{ key: "ac", label: "Plugged in" }, { key: "battery", label: "On battery" }]
+                            Column {
+                                id: presetBlock
+                                required property var modelData
+                                width: parent.width; spacing: Style.space(3)
+                                Text { text: presetBlock.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                Row { id: presetRow; width: parent.width; spacing: Style.space(4)
+                                    readonly property real cw: (width - spacing * 3) / 4
+                                    Repeater {
+                                        model: ["Auto", "Quiet", "Balanced", "Performance"]
+                                        Button {
+                                            required property string modelData
+                                            width: presetRow.cw
+                                            text: modelData
+                                            tooltipText: modelData === "Auto"
+                                                ? "Do not switch automatically; leave the " + (presetBlock.modelData.key === "battery" ? "battery" : "AC") + " mode as asusd has it."
+                                                : "Apply " + modelData + " automatically when the charger is " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
+                                            fontSize: Style.font.caption
+                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                            horizontalPadding: Style.spacing.controlPaddingX
+                                            verticalPadding: Style.spacing.controlPaddingY
+                                            bordered: true
+                                            active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
+                                            onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // POWER PLAN — one place to edit everything a single mode
                     // (Quiet/Balanced/Performance) carries. The dropdown picks the
                     // mode; the rows below edit that mode's screen refresh and CPU
@@ -1366,61 +1390,44 @@ Panel {
                                 }
                             }
                         }
-                        // Firmware limits for the selected plan. Auto leaves each
-                        // limit unchanged when switching to this plan.
-                        Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3 || root.armourySupported.nvDynBoost || root.armourySupported.nvTempTarget; width: parent.width; spacing: Style.space(3)
-                            Text { text: "Firmware limits"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                        // Per-plan firmware limits, grouped CPU/GPU the same way
+                        // as the global limits above. Auto leaves a limit
+                        // unchanged when switching to this plan.
+                        Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(3)
+                            Text { text: "CPU Power"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                             Repeater {
-                                model: root.planLimitRows()
+                                model: root.planCpuLimitRows()
                                 Row {
-                                    id: planLimitRow
+                                    id: cpuLimitRow
                                     required property var modelData
-                                    visible: planLimitRow.modelData.supported
+                                    visible: cpuLimitRow.modelData.supported
                                     width: parent.width; spacing: Style.space(4)
-                                    readonly property string state: root.planLimitValue(root.plan, planLimitRow.modelData.key)
+                                    readonly property string state: root.planLimitValue(root.plan, cpuLimitRow.modelData.key)
                                     readonly property bool auto: state === "Auto"
-                                    readonly property int shown: auto ? planLimitRow.modelData.fallback : Number(state)
-                                    Text { text: planLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
-                                    Button { width: Style.space(40); text: "Auto"; active: planLimitRow.auto; tooltipText: (planLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + planLimitRow.modelData.label + (planLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, planLimitRow.modelData.key, planLimitRow.modelData.fallback) }
-                                    PanelSlider { width: planLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: planLimitRow.modelData.minimum; maximum: planLimitRow.modelData.maximum; step: 1; integer: true; value: planLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, planLimitRow.modelData.key, Math.round(v)) } }
-                                    Text { text: planLimitRow.auto ? "Auto" : planLimitRow.shown + planLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                                    readonly property int shown: auto ? cpuLimitRow.modelData.fallback : Number(state)
+                                    Text { text: cpuLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
+                                    Button { width: Style.space(40); text: "Auto"; active: cpuLimitRow.auto; tooltipText: (cpuLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + cpuLimitRow.modelData.label + (cpuLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, cpuLimitRow.modelData.key, cpuLimitRow.modelData.fallback) }
+                                    PanelSlider { width: cpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: cpuLimitRow.modelData.minimum; maximum: cpuLimitRow.modelData.maximum; step: 1; integer: true; value: cpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, cpuLimitRow.modelData.key, Math.round(v)) } }
+                                    Text { text: cpuLimitRow.auto ? "Auto" : cpuLimitRow.shown + cpuLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                                 }
                             }
                         }
-                    }
-                    // AUTO-SWITCH ON POWER — saves a mode per source and applies it
-                    // when the charger is plugged or unplugged. Persisted in
-                    // shell.json through `omarchy bar set`.
-                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(8)
-                        PanelSeparator { foreground: root.bar.foreground }
-                        PanelSectionHeader { text: "AUTO-SWITCH ON POWER"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
-                        Repeater {
-                            model: [{ key: "ac", label: "Plugged in" }, { key: "battery", label: "On battery" }]
-                            Column {
-                                id: presetBlock
-                                required property var modelData
-                                width: parent.width; spacing: Style.space(3)
-                                Text { text: presetBlock.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                                Row { id: presetRow; width: parent.width; spacing: Style.space(4)
-                                    readonly property real cw: (width - spacing * 3) / 4
-                                    Repeater {
-                                        model: ["Auto", "Quiet", "Balanced", "Performance"]
-                                        Button {
-                                            required property string modelData
-                                            width: presetRow.cw
-                                            text: modelData
-                                            tooltipText: modelData === "Auto"
-                                                ? "Do not switch automatically; leave the " + (presetBlock.modelData.key === "battery" ? "battery" : "AC") + " mode as asusd has it."
-                                                : "Apply " + modelData + " automatically when the charger is " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
-                                            fontSize: Style.font.caption
-                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                            horizontalPadding: Style.spacing.controlPaddingX
-                                            verticalPadding: Style.spacing.controlPaddingY
-                                            bordered: true
-                                            active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
-                                            onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
-                                        }
-                                    }
+                        Column { visible: root.armourySupported.nvDynBoost || root.armourySupported.nvTempTarget; width: parent.width; spacing: Style.space(3)
+                            Text { text: "GPU Power"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Repeater {
+                                model: root.planGpuLimitRows()
+                                Row {
+                                    id: gpuLimitRow
+                                    required property var modelData
+                                    visible: gpuLimitRow.modelData.supported
+                                    width: parent.width; spacing: Style.space(4)
+                                    readonly property string state: root.planLimitValue(root.plan, gpuLimitRow.modelData.key)
+                                    readonly property bool auto: state === "Auto"
+                                    readonly property int shown: auto ? gpuLimitRow.modelData.fallback : Number(state)
+                                    Text { text: gpuLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
+                                    Button { width: Style.space(40); text: "Auto"; active: gpuLimitRow.auto; tooltipText: (gpuLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + gpuLimitRow.modelData.label + (gpuLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, gpuLimitRow.modelData.key, gpuLimitRow.modelData.fallback) }
+                                    PanelSlider { width: gpuLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: gpuLimitRow.modelData.minimum; maximum: gpuLimitRow.modelData.maximum; step: 1; integer: true; value: gpuLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, gpuLimitRow.modelData.key, Math.round(v)) } }
+                                    Text { text: gpuLimitRow.auto ? "Auto" : gpuLimitRow.shown + gpuLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                                 }
                             }
                         }
@@ -1433,27 +1440,30 @@ Panel {
                         PanelSeparator { foreground: root.bar.foreground }
                         PanelSectionHeader { text: "SERVICES"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
                         Repeater {
-                            // asusd and supergfxd are read-only here; nvidia-powerd
-                            // gets a switch instead (below), so it is left out. A unit
-                            // that is not installed gets an install button, which is
-                            // the one state a button can fix outright.
-                            model: Model.serviceUnits.slice(0, 2)
+                            // One status row per daemon. asusd and supergfxd are
+                            // read-only dots; nvidia-powerd is the same now (it is
+                            // better left running — it provides Dynamic Boost and
+                            // runtime D3). A unit that is genuinely not installed
+                            // gets an install button, the one state a button can
+                            // fix outright.
+                            model: Model.serviceUnits
                             Row {
                                 id: svcRow
                                 required property var modelData
                                 readonly property var state: root.services[svcRow.modelData.id]
                                 readonly property bool installable: Model.serviceInstallable(svcRow.modelData, svcRow.state)
+                                // nvidia-powerd only appears where the driver is
+                                // present or the firmware reports an NVIDIA GPU.
+                                visible: !svcRow.modelData.nvidia || root.nvidiaPowerdPresent || root.nvidiaDgpu
                                 width: parent.width; spacing: Style.space(6)
                                 Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(svcRow.state) }
-                                Text { text: svcRow.modelData.id; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                                Text { text: svcRow.modelData.unit.replace(".service", ""); width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                                 Text { text: Model.serviceStateLabel(svcRow.state); color: Model.serviceStateColor(svcRow.state); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                                 // HoverHandler, not a MouseArea with anchors.fill:
                                 // horizontal anchors are not allowed on a Row child
                                 // and stop the Row laying out at all.
                                 HoverHandler { id: svcHelp }
                                 PanelToolTip { visible: svcHelp.hovered; text: svcRow.modelData.tip }
-                                // Declared after the row's hover catcher so the click
-                                // lands on the button, not on the tooltip area.
                                 Button {
                                     visible: svcRow.installable
                                     text: Model.serviceInstallLabel(svcRow.modelData.id)
@@ -1466,50 +1476,6 @@ Panel {
                                     anchors.verticalCenter: parent.verticalCenter
                                     onClicked: root.installService(svcRow.modelData.id)
                                 }
-                            }
-                        }
-                        // nvidia-powerd is the one service here with a switch, but
-                        // it still gets the same status dot as the two above.
-                        Row {
-                            id: powerdRow
-                            visible: root.nvidiaPowerdPresent
-                            width: parent.width; spacing: Style.space(6)
-                            Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.nvidiaPowerd) }
-                            Toggle {
-                                id: powerdToggle
-                                width: parent.width - Style.space(8) - Style.space(6)
-                                anchors.verticalCenter: parent.verticalCenter
-                                label: "nvidia-powerd"
-                                description: root.nvidiaPowerdActive ? "Running — dynamic boost and runtime D3 available" : "Stopped — enable to allow dynamic boost and runtime D3"
-                                checked: root.nvidiaPowerdActive
-                                foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
-                                onClicked: root.toggleNvidiaPowerd()
-                                property bool tipHovered: false
-                                onHovered: function(h) { powerdToggle.tipHovered = h }
-                                PanelToolTip { visible: powerdToggle.tipHovered; text: Model.serviceUnits[2].tip + "\nEnables or disables the unit through pkexec systemctl." }
-                            }
-                        }
-                        // nvidia-powerd only gets the switch once its unit exists, so
-                        // a laptop without the driver package is offered the install
-                        // here instead — and only when the firmware reports NVIDIA
-                        // hardware, since the package is the driver itself.
-                        Row {
-                            id: powerdInstallRow
-                            visible: root.nvidiaDgpu && Model.serviceMissing(root.services.nvidiaPowerd)
-                            width: parent.width; spacing: Style.space(6)
-                            Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.services.nvidiaPowerd) }
-                            Text { text: "nvidia-powerd"; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                            Text { text: Model.serviceStateLabel(root.services.nvidiaPowerd); color: Model.serviceStateColor(root.services.nvidiaPowerd); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                            Button {
-                                text: Model.serviceInstallLabel("nvidiaPowerd")
-                                tooltipText: "nvidia-powerd ships inside the NVIDIA driver package, so this installs\nnvidia-utils and enables the unit. Offered only because this laptop\nreports NVIDIA hardware."
-                                fontSize: Style.font.caption
-                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                horizontalPadding: Style.spacing.controlPaddingX
-                                verticalPadding: Style.spacing.controlPaddingY
-                                bordered: true
-                                anchors.verticalCenter: parent.verticalCenter
-                                onClicked: root.installService("nvidiaPowerd")
                             }
                         }
                     }
@@ -1658,17 +1624,6 @@ Panel {
         }
     }
     Process { id: serviceProc; command: Model.serviceStatusCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.services = Model.parseServiceStatus(text) } } }
-    Process {
-        id: powerdWriteProc
-        property bool prevActive: false
-        onExited: function(ec) {
-            if (ec === 0) { if (!serviceProc.running) serviceProc.running = true; return }
-            root.setServiceActive("nvidiaPowerd", prevActive ? "active" : "inactive")
-            root.showActionError(ec === 126 || ec === 127
-                ? "nvidia-powerd: authorisation cancelled — nothing changed."
-                : "nvidia-powerd: systemctl failed (exit " + ec + ").")
-        }
-    }
     Timer { id: errorClearTimer; interval: 8000; onTriggered: root.actionError = "" }
     // Launching the install terminal. A non-zero exit here means the launcher
     // itself failed (no omarchy-launch-tui, no terminal), so the manual command is

@@ -68,11 +68,12 @@ that.
   setting alone and says so. The section hides itself on a laptop that exposes
   neither file.
 - **Services** (Advanced) — `asusd`, `supergfxd` and `nvidia-powerd` with their
-  current state, since a stopped daemon is the usual reason a control in this
-  panel does nothing. `nvidia-powerd` also gets an enable/disable switch, shown
-  only where the unit is actually installed, and a unit that is not installed at
-  all gets an Install button that adds its package and enables it
-  ([details](#installing-missing-daemons)).
+  current state (a status dot each), since a stopped daemon is the usual reason a
+  control in this panel does nothing. `nvidia-powerd` is better left running
+  (it provides Dynamic Boost and dGPU runtime-D3), so it is a plain dot too, and
+  only appears where the driver is present or the firmware reports an NVIDIA GPU.
+  A unit that is not installed at all gets an Install button that adds its
+  package and enables it ([details](#installing-missing-daemons)).
 - **Bar icon** — scroll over it to cycle performance modes without opening the
   panel.
 
@@ -107,9 +108,10 @@ of its own.
 
 ### Power plans
 
-On the Advanced tab, **Power plan** is a dropdown that gathers everything a
-single mode (Quiet/Balanced/Performance) carries, so you edit one plan in one
-place; switching to the plan is what applies its settings. A plan carries:
+On the Advanced tab, **Auto-switch on power** maps each source to a mode, and
+**Power plan** is a dropdown that gathers everything a single mode
+(Quiet/Balanced/Performance) carries, so you edit one plan in one place;
+switching to the plan is what applies its settings. A plan carries:
 
 - **Screen refresh** — its default refresh rate (`refreshQuiet`/
   `refreshBalanced`/`refreshPerformance`; `Auto`, or one of the Hz values the
@@ -119,11 +121,12 @@ place; switching to the plan is what applies its settings. A plan carries:
   can be written (the CPU vendor decides the path and polarity), so a mode
   switch made from the bar with the panel closed parks that mode and applies it
   once the first probe lands.
-- **Firmware limits** — its own PL1/PL2/PL3 and GPU boost/temp
-  (`pl1Quiet`/`pl1Balanced`/`pl1Performance`, and so on; `Auto`, or a number).
-  Each row has an **Auto** button: `Auto` leaves that limit untouched when you
-  switch to the plan, so a plan only overrides the limits you set for it. The
-  global sliders above stay available for direct, one-off changes.
+- **CPU Power / GPU Power** — its own PL1/PL2/PL3 and GPU boost/temp
+  (`pl1Quiet`/`pl1Balanced`/`pl1Performance`, and so on; `Auto`, or a number),
+  grouped the same way as the global limits above. Each row has an **Auto**
+  button: `Auto` leaves that limit untouched when you switch to the plan, so a
+  plan only overrides the limits you set for it. The global sliders above stay
+  available for direct, one-off changes.
 
 `Auto` everywhere means "leave it alone", so a plan only changes what you
 configured for it.
@@ -237,10 +240,10 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 
 ## Privileges
 
-Everything in this plugin works without root except the CPU boost switch and the
-`nvidia-powerd` toggle, and both are optional: without any of the rules below the
-plugin still works, you just authenticate per change, and a cancelled prompt
-leaves the setting untouched and reports it.
+Everything in this plugin works without root except the CPU boost switch, and
+that is optional: without the rule below the plugin still works, you just
+authenticate per change, and a cancelled prompt leaves the setting untouched and
+reports it.
 
 **CPU boost.** `intel_pstate/no_turbo` and `cpufreq/boost` are root-owned and
 `asusctl` has no equivalent, so the switch runs `pkexec tee <path>`. To avoid a
@@ -260,33 +263,6 @@ EOF
 ```
 
 Change the group (`wheel`, `sudo`, …) to match your system.
-
-**nvidia-powerd.** The switch runs
-`pkexec systemctl enable|disable --now nvidia-powerd.service`, which needs two
-separate systemd polkit actions — and only the first of them can be scoped to a
-single unit:
-
-```bash
-sudo tee /etc/polkit-1/rules.d/61-asus-powerd.rules > /dev/null <<'EOF'
-polkit.addRule(function(action, subject) {
-    if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        action.lookup("unit") == "nvidia-powerd.service" &&
-        subject.isInGroup("wheel")) {
-        return polkit.Result.YES;
-    }
-});
-EOF
-```
-
-That rule covers the start/stop half. The enable/disable half needs
-`org.freedesktop.systemd1.manage-unit-files`, which systemd does not pass a unit
-name to (see [systemd#38992](https://github.com/systemd/systemd/issues/38992)),
-so a rule for it would grant the group the right to enable or disable *any*
-unit. This plugin deliberately does not ask you to grant that, which means the
-switch still shows one prompt per change — answer it, or if you want
-`nvidia-powerd` off for good, run
-`sudo systemctl disable --now nvidia-powerd.service` once and leave the switch
-alone.
 
 ## Compatibility
 

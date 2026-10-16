@@ -792,16 +792,6 @@ function serviceStateColor(state) {
     return "#cc9944"
 }
 
-// enable/disable --now does both halves of the change in one pkexec prompt, but
-// reset-failed has to come first: the unit sets StartLimitIntervalSec=infinity,
-// so once it trips the start rate limit it stays failed until the state is
-// cleared, and `enable --now` alone cannot start it.
-function nvidiaPowerdSetCommand(on) {
-    var svc = "nvidia-powerd.service"
-    return ["pkexec", "sh", "-c",
-            "systemctl reset-failed " + svc + " 2>/dev/null; systemctl " + (on ? "enable" : "disable") + " --now " + svc]
-}
-
 // "Not installed" specifically — the unit file is absent, as opposed to a probe
 // that has not answered yet (load = "").
 function serviceMissing(state) { return !!state && state.load === "not-found" }
