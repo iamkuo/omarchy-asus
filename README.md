@@ -50,12 +50,15 @@ that.
   tuning), draggable curves per fan (CPU/GPU, plus Mid on laptops with a third
   fan) with the live RPM and temperature for that fan alongside, and a
   one-click reset.
-- **Advanced** — firmware power limits (PL1/PL2/PL3-FPPT, GPU dynamic boost,
-  GPU temp target) with ranges read from the firmware and a "Defaults" button
-  that replays the values `asusctl` reports as default. Each control appears
-  only if `asusctl armoury list` says your laptop exposes it. Note that PPT
-  limits are only applied by the firmware while profile tuning is enabled
-  (`asusctl profile tuning true`); asusd stores the values either way.
+- **Advanced** — a **Power plan** dropdown that gathers everything one mode
+  carries (screen refresh, CPU boost, and its own PL1/PL2/PL3 and GPU
+  boost/temp), the global firmware power limits (PL1/PL2/PL3-FPPT, GPU dynamic
+  boost, GPU temp target) with ranges read from the firmware and a "Defaults"
+  button that replays what `asusctl` reports as default, the **Auto-switch on
+  power** mapping (which mode to use on AC vs battery), the CPU boost switch,
+  and daemon status. Each control appears only if the laptop exposes it. Note
+  that PPT limits are only applied by the firmware while profile tuning is
+  enabled (`asusctl profile tuning true`); asusd stores the values either way.
 - **CPU boost** (Advanced) — a Turbo Boost on/off switch, the one thermal lever
   `asusctl` does not expose: it writes `intel_pstate/no_turbo` on Intel and
   `cpufreq/boost` on AMD, plus a per-mode plan (Quiet/Balanced/Performance) that
@@ -95,35 +98,35 @@ when the charger is connected or disconnected. Scrolling the bar icon uses
 the same behavior.
 
 If you would rather pin the mode yourself, use the **Auto-switch on power**
-section on the Main tab: choose a performance mode for "Plugged in" and for
+section on the Advanced tab: choose a performance mode for "Plugged in" and for
 "On battery", and the panel applies it when the charger changes. These are
 stored as the `defaultProfileAc` and `defaultProfileBattery` plugin settings
 (`Auto`, `Quiet`, `Balanced`, `Performance`); `Auto` leaves asusd's saved
 profile in charge. Plug/unplug sets only the mode — it has no refresh setting
 of its own.
 
-### Screen refresh per mode
+### Power plans
 
-Each performance mode carries its own default refresh rate (**SCREEN PER MODE**
-on the Main tab). Switching to a mode applies that mode's rate, so the screen
-follows the mode. Stored as `refreshQuiet`/`refreshBalanced`/`refreshPerformance`
-(`Auto`, or one of the Hz values the internal panel offers). Since plug/unplug
-just switches the mode, it applies that mode's rate too.
+On the Advanced tab, **Power plan** is a dropdown that gathers everything a
+single mode (Quiet/Balanced/Performance) carries, so you edit one plan in one
+place; switching to the plan is what applies its settings. A plan carries:
 
-### CPU boost per mode
+- **Screen refresh** — its default refresh rate (`refreshQuiet`/
+  `refreshBalanced`/`refreshPerformance`; `Auto`, or one of the Hz values the
+  internal panel offers).
+- **CPU boost** — its boost setting (`boostQuiet`/`boostBalanced`/
+  `boostPerformance`; `Auto`, `On`, `Off`). The flag has to be read before it
+  can be written (the CPU vendor decides the path and polarity), so a mode
+  switch made from the bar with the panel closed parks that mode and applies it
+  once the first probe lands.
+- **Firmware limits** — its own PL1/PL2/PL3 and GPU boost/temp
+  (`pl1Quiet`/`pl1Balanced`/`pl1Performance`, and so on; `Auto`, or a number).
+  Each row has an **Auto** button: `Auto` leaves that limit untouched when you
+  switch to the plan, so a plan only overrides the limits you set for it. The
+  global sliders above stay available for direct, one-off changes.
 
-Each performance mode also carries its own CPU boost setting, the way G-Helper
-stores it (**CPU BOOST** on the Advanced tab). Switching to a mode applies that
-mode's setting, so boost follows the mode — including when the switch comes from
-plugging or unplugging the charger, or from scrolling the bar icon. Stored as
-`boostQuiet`/`boostBalanced`/`boostPerformance` (`Auto`, `On`, `Off`); `Auto`
-leaves boost as it is, so a mode that does not care about boost never fights the
-toggle above it.
-
-The flag has to be read before it can be written, since the CPU vendor decides
-both the path and the polarity (`no_turbo` is inverted against `cpufreq/boost`),
-so a mode switch made from the bar with the panel closed parks that mode and
-applies it as soon as the first probe lands.
+`Auto` everywhere means "leave it alone", so a plan only changes what you
+configured for it.
 
 ### Installing missing daemons
 

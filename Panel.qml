@@ -309,6 +309,10 @@ Panel {
     // profile rather than silently always writing the active one.
     property string fanEditProfile: ""
     readonly property string fanProfile: fanEditProfile || currentProfile || "Balanced"
+    // Power-plan editor target (Advanced tab): the mode whose per-mode settings
+    // (screen refresh and CPU boost) are shown and edited together.
+    property string planKey: ""
+    readonly property string plan: root.planKey || root.currentProfile || "Balanced"
 
     // Armoury — armourySupported gates each Advanced control per-model, since
     // `asusctl armoury list` only reports attributes the running laptop
@@ -379,7 +383,9 @@ Panel {
     // Switching mode also applies that mode's own refresh rate and boost plan.
     function setProfile(p) {
         if (!p || actionProc.running) return
-        actionProc.command = Model.profileCommand(p, UPower.onBattery)
+        // Mode plus any per-plan firmware limits in one call, so the limits land
+        // right after the profile that owns them.
+        actionProc.command = ["sh", "-c", Model.profileCommand(p, UPower.onBattery).join(" ") + root.planLimitsCommand(p)]
         actionProc.running = true
         applyProfileRefresh(p)
         applyProfileBoost(p)
@@ -589,6 +595,41 @@ Panel {
         // Editing the plan for the mode in use applies it straight away; the
         // others take effect when you switch to them.
         if (name === root.currentProfile) applyProfileBoost(name)
+    }
+
+    // Per-plan firmware limits (PL1/PL2/PL3, GPU boost/temp), stored as
+    // <key><Plan> in shell.json. "Auto" leaves the limit unchanged when the plan
+    // is switched to, matching the refresh/boost plans.
+    function planLimitAttr(key) {
+        return ({ pl1: "ppt_pl1_spl", pl2: "ppt_pl2_sppt", pl3: "ppt_pl3_fppt", nvBoost: "nv_dynamic_boost", nvTemp: "nv_temp_target" })[key] || ""
+    }
+    function planLimitValue(name, key) { return String(setting(key + root.profileKeyFor(name), "Auto")) }
+    function setPlanLimit(name, key, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, key + root.profileKeyFor(name), String(value)]
+        persistProc.running = true
+        if (name === root.currentProfile && String(value) !== "Auto") setArmouryAttr(root.planLimitAttr(key), Math.round(Number(value)))
+    }
+    function setPlanLimitAuto(name, key) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, key + root.profileKeyFor(name), "Auto"]
+        persistProc.running = true
+    }
+    function planLimitsCommand(name) {
+        var keys = ["pl1", "pl2", "pl3", "nvBoost", "nvTemp"]
+        var s = ""
+        for (var i = 0; i < keys.length; i++) {
+            var v = root.planLimitValue(name, keys[i])
+            if (v !== "Auto") s += " && asusctl armoury set " + root.planLimitAttr(keys[i]) + " " + Math.round(Number(v))
+        }
+        return s
+    }
+    function planLimitRows() {
+        return [
+            { key: "pl1", label: "PL1", unit: "W", supported: root.armourySupported.pptPl1, minimum: root.pptPl1Min, maximum: root.pptPl1Max, fallback: root.pptPl1 },
+            { key: "pl2", label: "PL2", unit: "W", supported: root.armourySupported.pptPl2, minimum: root.pptPl2Min, maximum: root.pptPl2Max, fallback: root.pptPl2 },
+            { key: "pl3", label: "PL3", unit: "W", supported: root.armourySupported.pptPl3, minimum: root.pptPl3Min, maximum: root.pptPl3Max, fallback: root.pptPl3 },
+            { key: "nvBoost", label: "Boost", unit: "W", supported: root.armourySupported.nvDynBoost, minimum: root.nvDynBoostMin, maximum: root.nvDynBoostMax, fallback: root.nvDynBoost },
+            { key: "nvTemp", label: "Temp", unit: "°C", supported: root.armourySupported.nvTempTarget, minimum: root.nvTempTargetMin, maximum: root.nvTempTargetMax, fallback: root.nvTempTarget }
+        ]
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -818,83 +859,6 @@ Panel {
                         Row { id: pRow; width: parent.width; spacing: Style.space(4); readonly property real cw: root.profiles.length > 0 ? (width - spacing * (root.profiles.length - 1)) / root.profiles.length : 0
                             Repeater { model: root.profiles
                                 Button { required property var modelData; required property int index; width: pRow.cw; iconText: Model.profileIcon(String(modelData)); iconSize: Style.font.title; text: String(modelData); tooltipText: Model.profileDescription(String(modelData)); fontSize: Style.font.bodySmall; foreground: root.currentProfile === modelData ? Model.profileColor(String(modelData)) : root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; active: root.currentProfile === modelData; hasCursor: root.cursorActive && root.profileIndex === index; onClicked: root.setProfile(modelData); onHovered: function(h) { if (h) { root.cursorActive = true; root.profileIndex = index } } }
-                            }
-                        }
-                    }
-
-                    // AUTO-SWITCH ON POWER — saves a preset per source and applies
-                    // it when the charger is plugged or unplugged. Persisted in
-                    // shell.json through `omarchy bar set`.
-                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(8)
-                        PanelSeparator { foreground: root.bar.foreground }
-                        PanelSectionHeader { text: "AUTO-SWITCH ON POWER"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
-                        Repeater {
-                            model: [{ key: "ac", label: "Plugged in" }, { key: "battery", label: "On battery" }]
-                            Column {
-                                id: presetBlock
-                                required property var modelData
-                                width: parent.width; spacing: Style.space(3)
-                                Text { text: presetBlock.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                                Row { id: presetRow; width: parent.width; spacing: Style.space(4)
-                                    readonly property real cw: (width - spacing * 3) / 4
-                                    Repeater {
-                                        model: ["Auto", "Quiet", "Balanced", "Performance"]
-                                        Button {
-                                            required property string modelData
-                                            width: presetRow.cw
-                                            text: modelData
-                                            tooltipText: modelData === "Auto"
-                                                ? "Do not switch automatically; leave the " + (presetBlock.modelData.key === "battery" ? "battery" : "AC") + " profile as asusd has it."
-                                                : "Apply " + modelData + " automatically when the charger is " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
-                                            fontSize: Style.font.caption
-                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                            horizontalPadding: Style.spacing.controlPaddingX
-                                            verticalPadding: Style.spacing.controlPaddingY
-                                            bordered: true
-                                            active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
-                                            onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // SCREEN PER MODE — each performance mode carries its own
-                    // default refresh rate, applied when the mode is switched to
-                    // (including via plug/unplug, since that just switches mode).
-                    Column { visible: root.monitor !== null && root.monitor.rates.length > 1; width: parent.width; spacing: Style.space(6)
-                        PanelSeparator { foreground: root.bar.foreground }
-                        PanelSectionHeader { text: "SCREEN PER MODE"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
-                        Repeater {
-                            model: root.profiles
-                            Column {
-                                id: modeBlock
-                                required property var modelData
-                                width: parent.width; spacing: Style.space(3)
-                                Text { text: String(modeBlock.modelData); color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                                Row { id: modeRow; width: parent.width; spacing: Style.space(4)
-                                    readonly property int n: 1 + (root.monitor ? root.monitor.rates.length : 0)
-                                    readonly property real cw: (width - spacing * (n - 1)) / Math.max(1, n)
-                                    Repeater {
-                                        model: ["Auto"].concat(root.monitor ? root.monitor.rates : [])
-                                        Button {
-                                            required property var modelData
-                                            width: modeRow.cw
-                                            text: modelData === "Auto" ? "Auto" : modelData + " Hz"
-                                            tooltipText: modelData === "Auto"
-                                                ? "Leave the refresh rate unchanged when switching to " + String(modeBlock.modelData) + "."
-                                                : "Switch the screen to " + modelData + " Hz when you switch to " + String(modeBlock.modelData) + "."
-                                            fontSize: Style.font.caption
-                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                            horizontalPadding: Style.spacing.controlPaddingX
-                                            verticalPadding: Style.spacing.controlPaddingY
-                                            bordered: true
-                                            active: String(root.profileRefreshFor(modeBlock.modelData)) === String(modelData)
-                                            onClicked: root.setProfileRefresh(modeBlock.modelData, String(modelData))
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -1326,39 +1290,129 @@ Panel {
                             onHovered: function(h) { turboToggle.tipHovered = h }
                             PanelToolTip { visible: turboToggle.tipHovered; text: "asusctl exposes no boost switch, so this writes " + Model.turboPath(root.turbo.kind) + "\nthrough pkexec. Turning it off lowers peak and sustained\ntemperatures at the cost of burst performance.\nNeeds the polkit rule from the README, otherwise the prompt\nis cancelled and nothing changes." }
                         }
-                        // BOOST PER MODE — G-Helper stores CPU boost per
-                        // performance mode and applies it on the switch, so each
-                        // mode gets its own choice here. Auto leaves the current
-                        // state alone, so a mode that does not care about boost
-                        // never fights the toggle above.
-                        Column { width: parent.width; spacing: Style.space(6)
-                            Text { width: parent.width; text: "Each performance mode carries its own boost setting, applied when you switch to that mode. Auto leaves boost as it is."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                    }
+                    // POWER PLAN — one place to edit everything a single mode
+                    // (Quiet/Balanced/Performance) carries. The dropdown picks the
+                    // mode; the rows below edit that mode's screen refresh and CPU
+                    // boost. Switching to the mode is what applies them.
+                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(6)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "POWER PLAN"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Text { width: parent.width; text: "Pick a plan to edit everything it carries. The settings apply when you switch to that plan."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                        Dropdown {
+                            id: planDropdown
+                            width: parent.width
+                            label: "Plan"
+                            value: root.plan
+                            options: root.profiles
+                            foreground: root.bar.foreground
+                            fontFamily: root.bar.fontFamily
+                            onChanged: function(v) { root.planKey = v }
+                        }
+                        // Screen refresh for the selected plan.
+                        Column { visible: root.monitor !== null && root.monitor.rates.length > 1; width: parent.width; spacing: Style.space(3)
+                            Text { text: "Screen refresh"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Row { id: planHzRow; width: parent.width; spacing: Style.space(4)
+                                readonly property int n: 1 + (root.monitor ? root.monitor.rates.length : 0)
+                                readonly property real cw: (width - spacing * (n - 1)) / Math.max(1, n)
+                                Repeater {
+                                    model: ["Auto"].concat(root.monitor ? root.monitor.rates : [])
+                                    Button {
+                                        required property var modelData
+                                        width: planHzRow.cw
+                                        text: modelData === "Auto" ? "Auto" : modelData + " Hz"
+                                        tooltipText: modelData === "Auto"
+                                            ? "Leave the refresh rate unchanged when switching to " + root.plan + "."
+                                            : "Switch the screen to " + modelData + " Hz when switching to " + root.plan + "."
+                                        fontSize: Style.font.caption
+                                        foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                        horizontalPadding: Style.spacing.controlPaddingX
+                                        verticalPadding: Style.spacing.controlPaddingY
+                                        bordered: true
+                                        active: String(root.profileRefreshFor(root.plan)) === String(modelData)
+                                        onClicked: root.setProfileRefresh(root.plan, String(modelData))
+                                    }
+                                }
+                            }
+                        }
+                        // CPU boost for the selected plan.
+                        Column { visible: root.turbo.available; width: parent.width; spacing: Style.space(3)
+                            Text { text: "CPU boost"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                            Row { id: planBoostRow; width: parent.width; spacing: Style.space(4)
+                                readonly property real cw: (width - spacing * 2) / 3
+                                Repeater {
+                                    model: ["Auto", "On", "Off"]
+                                    Button {
+                                        required property string modelData
+                                        width: planBoostRow.cw
+                                        text: modelData
+                                        tooltipText: modelData === "Auto"
+                                            ? "Leave boost as it is when switching to " + root.plan + "."
+                                            : "Turn CPU boost " + modelData.toLowerCase() + " when switching to " + root.plan + "."
+                                        fontSize: Style.font.caption
+                                        foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                        horizontalPadding: Style.spacing.controlPaddingX
+                                        verticalPadding: Style.spacing.controlPaddingY
+                                        bordered: true
+                                        active: root.profileBoostFor(root.plan) === modelData
+                                        onClicked: root.setProfileBoost(root.plan, modelData)
+                                    }
+                                }
+                            }
+                        }
+                        // Firmware limits for the selected plan. Auto leaves each
+                        // limit unchanged when switching to this plan.
+                        Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3 || root.armourySupported.nvDynBoost || root.armourySupported.nvTempTarget; width: parent.width; spacing: Style.space(3)
+                            Text { text: "Firmware limits"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                             Repeater {
-                                model: root.profiles
-                                Column {
-                                    id: boostBlock
+                                model: root.planLimitRows()
+                                Row {
+                                    id: planLimitRow
                                     required property var modelData
-                                    width: parent.width; spacing: Style.space(3)
-                                    Text { text: String(boostBlock.modelData) + (root.currentProfile === boostBlock.modelData ? " •" : ""); color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                                    Row { id: boostRow; width: parent.width; spacing: Style.space(4)
-                                        readonly property real cw: (width - spacing * 2) / 3
-                                        Repeater {
-                                            model: ["Auto", "On", "Off"]
-                                            Button {
-                                                required property string modelData
-                                                width: boostRow.cw
-                                                text: modelData
-                                                tooltipText: modelData === "Auto"
-                                                    ? "Leave boost as it is when switching to " + String(boostBlock.modelData) + "."
-                                                    : "Turn CPU boost " + modelData.toLowerCase() + " when you switch to " + String(boostBlock.modelData) + "."
-                                                fontSize: Style.font.caption
-                                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
-                                                horizontalPadding: Style.spacing.controlPaddingX
-                                                verticalPadding: Style.spacing.controlPaddingY
-                                                bordered: true
-                                                active: root.profileBoostFor(String(boostBlock.modelData)) === modelData
-                                                onClicked: root.setProfileBoost(String(boostBlock.modelData), modelData)
-                                            }
+                                    visible: planLimitRow.modelData.supported
+                                    width: parent.width; spacing: Style.space(4)
+                                    readonly property string state: root.planLimitValue(root.plan, planLimitRow.modelData.key)
+                                    readonly property bool auto: state === "Auto"
+                                    readonly property int shown: auto ? planLimitRow.modelData.fallback : Number(state)
+                                    Text { text: planLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
+                                    Button { width: Style.space(40); text: "Auto"; active: planLimitRow.auto; tooltipText: "Leave " + planLimitRow.modelData.label + " unchanged when switching to " + root.plan + "."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setPlanLimitAuto(root.plan, planLimitRow.modelData.key) }
+                                    PanelSlider { width: planLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: planLimitRow.modelData.minimum; maximum: planLimitRow.modelData.maximum; step: 1; integer: true; value: planLimitRow.shown; enabled: !planLimitRow.auto; opacity: planLimitRow.auto ? 0.5 : 1; onReleased: function(v) { root.setPlanLimit(root.plan, planLimitRow.modelData.key, Math.round(v)) } }
+                                    Text { text: planLimitRow.auto ? "Auto" : planLimitRow.shown + planLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                                }
+                            }
+                        }
+                    }
+                    // AUTO-SWITCH ON POWER — saves a mode per source and applies it
+                    // when the charger is plugged or unplugged. Persisted in
+                    // shell.json through `omarchy bar set`.
+                    Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(8)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "AUTO-SWITCH ON POWER"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Repeater {
+                            model: [{ key: "ac", label: "Plugged in" }, { key: "battery", label: "On battery" }]
+                            Column {
+                                id: presetBlock
+                                required property var modelData
+                                width: parent.width; spacing: Style.space(3)
+                                Text { text: presetBlock.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                Row { id: presetRow; width: parent.width; spacing: Style.space(4)
+                                    readonly property real cw: (width - spacing * 3) / 4
+                                    Repeater {
+                                        model: ["Auto", "Quiet", "Balanced", "Performance"]
+                                        Button {
+                                            required property string modelData
+                                            width: presetRow.cw
+                                            text: modelData
+                                            tooltipText: modelData === "Auto"
+                                                ? "Do not switch automatically; leave the " + (presetBlock.modelData.key === "battery" ? "battery" : "AC") + " mode as asusd has it."
+                                                : "Apply " + modelData + " automatically when the charger is " + (presetBlock.modelData.key === "battery" ? "unplugged." : "plugged in.")
+                                            fontSize: Style.font.caption
+                                            foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                            horizontalPadding: Style.spacing.controlPaddingX
+                                            verticalPadding: Style.spacing.controlPaddingY
+                                            bordered: true
+                                            active: root.defaultProfileFor(presetBlock.modelData.key) === modelData
+                                            onClicked: root.setDefaultProfile(presetBlock.modelData.key, modelData)
                                         }
                                     }
                                 }
@@ -1460,6 +1514,8 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
+            // The power-plan dropdown owns the keys while its popup is open.
+            blocked: planDropdown.popupOpen
             onCloseRequested: root.close()
             onMoveRequested: function(dx, dy) { if (dy !== 0) flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY - dy * 40)) }
         }
