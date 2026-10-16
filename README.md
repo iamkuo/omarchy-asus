@@ -191,26 +191,79 @@ Two details worth knowing:
 node test-model.js   # parser regression checks against real asusctl output
 ```
 
-## Prerequisites
+## Setup on a fresh Omarchy
+
+The whole path from a clean Omarchy install to the panel working in your bar.
+Steps 1 and 2 are required; 3 and 4 are optional.
+
+### 1. Install asusctl and enable asusd (required)
+
+The panel drives [`asusctl`](https://asus-linux.org/), which talks to the
+`asusd` daemon over D-Bus. Without them the widget hides itself.
 
 ```bash
-# From AUR
-yay -S asusctl
-
-# Or from the OGC Arch repo — see https://asus-linux.org for setup
+# From the OGC Arch repo — see https://asus-linux.org for the repo setup
 sudo pacman -S asusctl
+
+# ...or from the AUR
+yay -S asusctl
 
 sudo systemctl enable --now asusd.service
 ```
 
-## Install
+Check it is up:
+
+```bash
+systemctl is-active asusd          # -> active
+asusctl info --show-supported      # lists what your model supports
+```
+
+### 2. Install the plugin (required)
 
 ```bash
 omarchy plugin add https://github.com/iamkuo/omarchy-asus.git --enable
 ```
 
-Or clone manually into `~/.config/omarchy/plugins/io.github.moneytosms.asus`
-and enable it via the Omarchy plugin menu.
+`--enable` puts it in the bar and opens it once. If you added it without
+`--enable`, turn it on from the plugin menu (`omarchy menu plugin enable`); it
+is listed as **ASUS** under System. To add it by hand instead, clone it into
+`~/.config/omarchy/plugins/io.github.moneytosms.asus` and enable it there.
+
+After editing the plugin's own files, rebuild the panel:
+
+```bash
+omarchy restart shell
+```
+
+### 3. Allow the CPU-boost switch without a password (optional)
+
+Turbo Boost is the only control that needs root (`intel_pstate/no_turbo` on
+Intel, `cpufreq/boost` on AMD). It works without this, prompting per change;
+add the rule in [Privileges](#privileges) to make it prompt-free.
+
+### 4. Stop nvidia-powerd getting stuck (optional, NVIDIA only)
+
+asusd rewrites its config on armoury changes, which can restart
+`nvidia-powerd` a few times in a row and trip the unit's start rate limit
+(`StartLimitIntervalSec=infinity`), leaving it **failed** with nothing able to
+start it. To rule that out:
+
+```bash
+sudo mkdir -p /etc/systemd/system/nvidia-powerd.service.d
+sudo tee /etc/systemd/system/nvidia-powerd.service.d/override.conf > /dev/null <<'EOF'
+[Unit]
+StartLimitIntervalSec=0
+EOF
+sudo systemctl daemon-reload
+sudo systemctl reset-failed nvidia-powerd.service
+sudo systemctl enable --now nvidia-powerd.service
+```
+
+### 5. Verify
+
+Open the ASUS widget from the bar. The Advanced tab's **Services** section
+shows `asusd` (and `nvidia-powerd` where present) with a green dot when running
+— a stopped `asusd` is the usual reason a control in the panel does nothing.
 
 ## Remove
 
