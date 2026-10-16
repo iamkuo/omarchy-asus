@@ -1408,18 +1408,26 @@ Panel {
                                 }
                             }
                         }
-                        Toggle {
-                            id: powerdToggle
+                        // nvidia-powerd is the one service here with a switch, but
+                        // it still gets the same status dot as the two above.
+                        Row {
+                            id: powerdRow
                             visible: root.nvidiaPowerdPresent
-                            width: parent.width
-                            label: "nvidia-powerd"
-                            description: root.nvidiaPowerdActive ? "Running — dynamic boost and runtime D3 available" : "Stopped — enable to allow dynamic boost and runtime D3"
-                            checked: root.nvidiaPowerdActive
-                            foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
-                            onClicked: root.toggleNvidiaPowerd()
-                            property bool tipHovered: false
-                            onHovered: function(h) { powerdToggle.tipHovered = h }
-                            PanelToolTip { visible: powerdToggle.tipHovered; text: Model.serviceUnits[2].tip + "\nEnables or disables the unit through pkexec systemctl." }
+                            width: parent.width; spacing: Style.space(6)
+                            Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.nvidiaPowerd) }
+                            Toggle {
+                                id: powerdToggle
+                                width: parent.width - Style.space(8) - Style.space(6)
+                                anchors.verticalCenter: parent.verticalCenter
+                                label: "nvidia-powerd"
+                                description: root.nvidiaPowerdActive ? "Running — dynamic boost and runtime D3 available" : "Stopped — enable to allow dynamic boost and runtime D3"
+                                checked: root.nvidiaPowerdActive
+                                foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
+                                onClicked: root.toggleNvidiaPowerd()
+                                property bool tipHovered: false
+                                onHovered: function(h) { powerdToggle.tipHovered = h }
+                                PanelToolTip { visible: powerdToggle.tipHovered; text: Model.serviceUnits[2].tip + "\nEnables or disables the unit through pkexec systemctl." }
+                            }
                         }
                         // nvidia-powerd only gets the switch once its unit exists, so
                         // a laptop without the driver package is offered the install
