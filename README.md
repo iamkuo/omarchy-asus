@@ -140,15 +140,16 @@ in `sleep.conf`. The **Lid & hibernate** section above the Power plan dropdown
 sets the system-wide value, written as drop-ins
 (`/etc/systemd/logind.conf.d/50-asus-lid.conf` and
 `/etc/systemd/sleep.conf.d/50-asus-hibernate.conf`) followed by a logind reload
-— Omarchy's own config is left untouched. Values are `Auto` (remove the drop-in;
-systemd's default, i.e. suspend), `Suspend`, `Suspend then hibernate`,
-`Hibernate`, `Lock`, `Do nothing`, `Power off`, and the delay is `Auto`, `15m`,
-`30m`, `1h` or `2h`.
+— Omarchy's own config is left untouched. The global lid action is
+`Suspend` (systemd's default), `Suspend then hibernate`, `Hibernate`, `Lock`,
+`Do nothing` or `Power off`; the delay is a slider (`Auto` = leave it unset, or
+15–180 minutes).
 
 Both the global and per-plan controls need root, so add the polkit rule in
-[Privileges](#privileges) or you will authenticate on each change. A plan's
-`Auto` resolves to the global value; switching plans only rewrites the drop-in
-when the resolved values actually change.
+[Privileges](#privileges) or you will authenticate on each change. Under the
+dropdown, a plan's lid action can also be `Auto` (use the global value); its
+hibernate slider `Auto` likewise uses the global. Switching plans only rewrites
+the drop-in when the resolved values actually change.
 
 `Auto` everywhere means "leave it alone", so a plan only changes what you
 configured for it.

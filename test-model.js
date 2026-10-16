@@ -310,6 +310,8 @@ assert.equal(M.serviceInstallScript("asusd").indexOf("omarchy-launch-tui"), -1, 
 
 // ---------------------------------------------------------------- lid/hibernate
 assert.deepEqual(M.lidActions.slice(0, 3), ["auto", "suspend", "suspend-then-hibernate"])
+// The global control has no "auto" (Suspend is systemd's default).
+assert.deepEqual(M.lidActionsGlobal, ["suspend", "suspend-then-hibernate", "hibernate", "lock", "ignore", "poweroff"])
 assert.equal(M.lidActionLabel("ignore"), "Do nothing")
 assert.equal(M.lidActionLabel("bogus"), "Auto")
 assert.equal(M.hibernateDelayLabel("60min"), "1h")

@@ -840,6 +840,9 @@ function serviceInstallCommand(id) {
 // Omarchy's own logind.conf stays untouched. "auto" removes the drop-in, which
 // leaves systemd's own default in charge.
 var lidActions = ["auto", "suspend", "suspend-then-hibernate", "hibernate", "lock", "ignore", "poweroff"]
+// The global control has no "auto": the system always resolves to a concrete
+// lid action (Suspend is systemd's default), so "auto" there would be a no-op.
+var lidActionsGlobal = lidActions.filter(function(a) { return a !== "auto" })
 var lidActionLabels = {
     "auto": "Auto", "suspend": "Suspend", "suspend-then-hibernate": "Suspend then hibernate",
     "hibernate": "Hibernate", "lock": "Lock", "ignore": "Do nothing", "poweroff": "Power off"

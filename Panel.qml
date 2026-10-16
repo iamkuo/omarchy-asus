@@ -634,17 +634,20 @@ Panel {
     // override it (Auto = use the global). Applied as systemd drop-ins through
     // pkexec (see Model.lidApplyCommand), so it needs the polkit rule in the
     // README. Skipped when the resolved values are already in effect.
-    function globalLidValue() { return String(setting("lidAction", "auto")) }
+    function globalLidValue() { return String(setting("lidAction", "suspend")) }
     function globalHibValue() { return String(setting("hibernateDelay", "auto")) }
     function lidFor(name) { return String(setting("lid" + root.profileKeyFor(name), "auto")) }
     function hibFor(name) { return String(setting("hib" + root.profileKeyFor(name), "auto")) }
     function effectiveLid(name) { var v = root.lidFor(name); return v !== "auto" ? v : root.globalLidValue() }
     function effectiveHib(name) { var v = root.hibFor(name); return v !== "auto" ? v : root.globalHibValue() }
     function applyLidValues(lid, hib) {
+        // Suspend with no delay is systemd's own default, so write no drop-in
+        // for it (and remove any previous one).
+        var writeLid = (lid === "suspend" && hib === "auto") ? "auto" : lid
         if (lid === root.appliedLid && hib === root.appliedHib) return
         root.appliedLid = lid
         root.appliedHib = hib
-        lidProc.command = Model.lidApplyCommand(lid, hib)
+        lidProc.command = Model.lidApplyCommand(writeLid, hib)
         lidProc.running = true
     }
     function applyLid(name) { root.applyLidValues(root.effectiveLid(name), root.effectiveHib(name)) }
@@ -1383,7 +1386,7 @@ Panel {
                             width: parent.width
                             label: "Lid action"
                             value: root.globalLidValue()
-                            options: Model.lidActions.map(function(a) { return ({ value: a, label: Model.lidActionLabel(a) }) })
+                            options: Model.lidActionsGlobal.map(function(a) { return ({ value: a, label: Model.lidActionLabel(a) }) })
                             foreground: root.bar.foreground
                             fontFamily: root.bar.fontFamily
                             onChanged: function(v) { root.setLidAction(v) }
