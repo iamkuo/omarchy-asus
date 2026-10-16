@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
@@ -184,6 +185,160 @@ Panel {
                 color: Qt.darker(tile.foreground, 1.5)
                 font.family: tile.fontFamily; font.pixelSize: Style.font.caption
                 anchors.horizontalCenter: parent.horizontalCenter
+            }
+        }
+    }
+
+    // A dropdown like the shell's qs.Ui.Dropdown, but its popup flips above the
+    // trigger when there is not enough room below. The shell one always opens
+    // downward (`y: trigger.height + …`), so a dropdown near the bottom of a
+    // long panel runs off-screen.
+    component FlipDropdown: Item {
+        id: fd
+        property string label: ""
+        property string value: ""
+        property var options: []
+        property color foreground: "white"
+        property color background: Color.popups.background
+        property color accent: "#44cc44"
+        property string fontFamily: "monospace"
+        property bool hasCursor: false
+        property int rowHeight: Style.space(30)
+        readonly property bool popupOpen: popup.opened
+        signal changed(string value)
+        signal hovered(bool isHovered)
+
+        function optionValue(o) { return (o && typeof o === "object") ? String(o.value) : String(o) }
+        function optionLabel(o) { return (o && typeof o === "object") ? String(o.label) : String(o) }
+        function currentLabel() { for (var i = 0; i < options.length; i++) if (optionValue(options[i]) === value) return optionLabel(options[i]); return value }
+        function open() { popup.open() }
+        function close() { popup.close() }
+
+        implicitWidth: Style.space(220)
+        implicitHeight: (fd.label !== "" ? labelText.implicitHeight + Style.space(4) : 0) + Style.space(34)
+
+        Column {
+            anchors.fill: parent
+            spacing: Style.space(4)
+            Text {
+                id: labelText
+                visible: fd.label !== ""
+                width: parent.width
+                text: fd.label
+                color: Qt.darker(fd.foreground, 1.4)
+                font.family: fd.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+            }
+            Rectangle {
+                id: trigger
+                width: parent.width
+                height: Style.space(34)
+                radius: Style.cornerRadius
+                color: Qt.rgba(fd.foreground.r, fd.foreground.g, fd.foreground.b, triggerMouse.containsMouse || fd.hasCursor ? 0.12 : 0.06)
+                border.width: 1
+                border.color: Qt.rgba(fd.foreground.r, fd.foreground.g, fd.foreground.b, 0.25)
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.right: chevron.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(8)
+                    anchors.rightMargin: Style.space(4)
+                    text: fd.currentLabel()
+                    color: fd.foreground
+                    font.family: fd.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                }
+                Text {
+                    id: chevron
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.rightMargin: Style.space(8)
+                    text: "\u{F0140}"
+                    color: Qt.darker(fd.foreground, 1.2)
+                    font.family: fd.fontFamily
+                    font.pixelSize: Style.font.body
+                }
+                MouseArea {
+                    id: triggerMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onEntered: fd.hovered(true)
+                    onExited: fd.hovered(false)
+                    onClicked: popup.opened ? popup.close() : popup.open()
+                }
+
+                readonly property var win: trigger.QsWindow ? trigger.QsWindow.window : null
+                readonly property real winH: win ? win.height : 0
+                readonly property real sceneY: trigger.mapToItem(null, 0, 0).y
+
+                Popup {
+                    id: popup
+                    readonly property real listH: Math.min(fd.options.length * fd.rowHeight + Math.max(0, fd.options.length - 1) * Style.space(2) + Style.space(2),
+                                                           fd.rowHeight * 8 + 7 * Style.space(2) + Style.space(2))
+                    x: 0
+                    // Flip above when the space below the trigger is too small.
+                    y: (trigger.winH > 0 && (trigger.winH - (trigger.sceneY + trigger.height)) < listH + Style.space(2))
+                       ? -(listH + Style.space(2)) : trigger.height + Style.space(2)
+                    width: trigger.width
+                    implicitHeight: listH
+                    padding: 1
+                    focus: true
+                    background: Rectangle {
+                        color: fd.background
+                        radius: Style.cornerRadius
+                        border.width: 1
+                        border.color: Qt.rgba(fd.foreground.r, fd.foreground.g, fd.foreground.b, 0.25)
+                    }
+                    onOpened: { optionList.currentIndex = Math.max(0, optionList.indexOfValue(fd.value)); optionList.forceActiveFocus() }
+                    contentItem: ListView {
+                        id: optionList
+                        spacing: Style.space(2)
+                        Keys.priority: Keys.BeforeItem
+                        Keys.onPressed: function(event) {
+                            if (event.key === Qt.Key_Escape) { popup.close(); event.accepted = true }
+                            else if (event.key === Qt.Key_Down || event.text === "j") { optionList.currentIndex = Math.min(fd.options.length - 1, optionList.currentIndex + 1); event.accepted = true }
+                            else if (event.key === Qt.Key_Up || event.text === "k") { optionList.currentIndex = Math.max(0, optionList.currentIndex - 1); event.accepted = true }
+                            else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { optionList.selectCurrent(); event.accepted = true }
+                        }
+                        implicitHeight: contentHeight
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: fd.options
+                        currentIndex: -1
+                        function indexOfValue(v) { for (var i = 0; i < fd.options.length; i++) if (fd.optionValue(fd.options[i]) === v) return i; return -1 }
+                        function selectCurrent() { if (currentIndex < 0 || currentIndex >= fd.options.length) return; var v = fd.optionValue(fd.options[currentIndex]); fd.value = v; fd.changed(v); popup.close() }
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            width: optionList.width
+                            height: fd.rowHeight
+                            color: index === optionList.currentIndex ? Qt.rgba(fd.foreground.r, fd.foreground.g, fd.foreground.b, 0.15) : "transparent"
+                            Text {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: Style.space(8)
+                                anchors.rightMargin: Style.space(8)
+                                text: fd.optionLabel(modelData)
+                                color: fd.foreground
+                                font.family: fd.fontFamily
+                                font.pixelSize: Style.font.body
+                                elide: Text.ElideRight
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onPositionChanged: optionList.currentIndex = parent.index
+                                onClicked: optionList.selectCurrent()
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1383,7 +1538,7 @@ Panel {
                         PanelSeparator { foreground: root.bar.foreground }
                         PanelSectionHeader { text: "LID & HIBERNATE"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
                         Text { width: parent.width; text: "What closing the lid does, and how long a suspend waits before hibernating. Plans can override these."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
-                        Dropdown {
+                        FlipDropdown {
                             id: globalLidDropdown
                             width: parent.width
                             label: "Lid action"
@@ -1412,7 +1567,7 @@ Panel {
                         PanelSeparator { foreground: root.bar.foreground }
                         PanelSectionHeader { text: "POWER PLAN"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
                         Text { width: parent.width; text: "Pick a plan to edit everything it carries. The settings apply when you switch to that plan."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
-                        Dropdown {
+                        FlipDropdown {
                             id: planDropdown
                             width: parent.width
                             label: "Plan"
@@ -1516,7 +1671,7 @@ Panel {
                         }
                         Column { width: parent.width; spacing: Style.space(3)
                             Text { text: "Lid action"; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                            Dropdown {
+                            FlipDropdown {
                                 id: planLidDropdown
                                 width: parent.width
                                 value: root.lidFor(root.plan)
