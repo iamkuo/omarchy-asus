@@ -613,6 +613,12 @@ Panel {
         persistProc.command = ["omarchy", "bar", "set", moduleName, key + root.profileKeyFor(name), "Auto"]
         persistProc.running = true
     }
+    // Auto is a toggle: clicking it off seeds an explicit value (the current
+    // live one) so the slider has something to start from.
+    function togglePlanLimitAuto(name, key, fallback) {
+        if (root.planLimitValue(name, key) === "Auto") root.setPlanLimit(name, key, Math.round(Number(fallback)))
+        else root.setPlanLimitAuto(name, key)
+    }
     function planLimitsCommand(name) {
         var keys = ["pl1", "pl2", "pl3", "nvBoost", "nvTemp"]
         var s = ""
@@ -1375,8 +1381,8 @@ Panel {
                                     readonly property bool auto: state === "Auto"
                                     readonly property int shown: auto ? planLimitRow.modelData.fallback : Number(state)
                                     Text { text: planLimitRow.modelData.label; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; width: Style.space(40); anchors.verticalCenter: parent.verticalCenter }
-                                    Button { width: Style.space(40); text: "Auto"; active: planLimitRow.auto; tooltipText: "Leave " + planLimitRow.modelData.label + " unchanged when switching to " + root.plan + "."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.setPlanLimitAuto(root.plan, planLimitRow.modelData.key) }
-                                    PanelSlider { width: planLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: planLimitRow.modelData.minimum; maximum: planLimitRow.modelData.maximum; step: 1; integer: true; value: planLimitRow.shown; enabled: !planLimitRow.auto; opacity: planLimitRow.auto ? 0.5 : 1; onReleased: function(v) { root.setPlanLimit(root.plan, planLimitRow.modelData.key, Math.round(v)) } }
+                                    Button { width: Style.space(40); text: "Auto"; active: planLimitRow.auto; tooltipText: (planLimitRow.auto ? "Auto — this plan leaves " : "Click to leave ") + planLimitRow.modelData.label + (planLimitRow.auto ? " unchanged. Click for a fixed value." : " unchanged when switching to " + root.plan + "."); fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.togglePlanLimitAuto(root.plan, planLimitRow.modelData.key, planLimitRow.modelData.fallback) }
+                                    PanelSlider { width: planLimitRow.width - Style.space(40) - Style.space(40) - Style.space(36) - Style.space(4) * 3; bar: root.bar; minimum: planLimitRow.modelData.minimum; maximum: planLimitRow.modelData.maximum; step: 1; integer: true; value: planLimitRow.shown; onReleased: function(v) { root.setPlanLimit(root.plan, planLimitRow.modelData.key, Math.round(v)) } }
                                     Text { text: planLimitRow.auto ? "Auto" : planLimitRow.shown + planLimitRow.modelData.unit; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(36); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                                 }
                             }
