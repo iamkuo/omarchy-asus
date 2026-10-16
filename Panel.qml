@@ -1387,8 +1387,11 @@ Panel {
                                 Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(svcRow.state) }
                                 Text { text: svcRow.modelData.id; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                                 Text { text: Model.serviceStateLabel(svcRow.state); color: Model.serviceStateColor(svcRow.state); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                                MouseArea { id: svcHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-                                PanelToolTip { visible: svcHelp.containsMouse; text: svcRow.modelData.tip }
+                                // HoverHandler, not a MouseArea with anchors.fill:
+                                // horizontal anchors are not allowed on a Row child
+                                // and stop the Row laying out at all.
+                                HoverHandler { id: svcHelp }
+                                PanelToolTip { visible: svcHelp.hovered; text: svcRow.modelData.tip }
                                 // Declared after the row's hover catcher so the click
                                 // lands on the button, not on the tooltip area.
                                 Button {
