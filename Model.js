@@ -671,6 +671,172 @@ function monitorCommand(mon, hz) {
 }
 
 // ============================================================
+// CPU turbo boost
+// ============================================================
+// asusctl exposes no boost switch, so this reads sysfs directly: Intel keeps the
+// flag in intel_pstate/no_turbo (0 = boost on), AMD in cpufreq/boost (1 = boost
+// on). Neither file is user-writable, which is why the write goes through
+// pkexec — see turboSetCommand and the polkit rule in the README.
+var turboScript =
+    'if [ -e /sys/devices/system/cpu/intel_pstate/no_turbo ]; then ' +
+    'echo kind=intel; echo raw=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null); ' +
+    'elif [ -e /sys/devices/system/cpu/cpufreq/boost ]; then ' +
+    'echo kind=amd; echo raw=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null); ' +
+    'else echo kind=none; fi'
+
+function turboCommand() { return ["sh", "-c", turboScript] }
+
+// `available` gates the whole control: a machine that reports neither file has
+// no boost switch to offer, so the row stays hidden rather than sitting there
+// doing nothing.
+function parseTurbo(raw) {
+    var r = { kind: "none", enabled: false, available: false }
+    var lines = String(raw || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+        var eq = lines[i].indexOf("=")
+        if (eq < 0) continue
+        var k = lines[i].substring(0, eq).trim(), v = lines[i].substring(eq + 1).trim()
+        if (k === "kind") r.kind = v
+        // The two files invert each other, so the raw value is read against the
+        // kind that produced it rather than assuming one convention.
+        else if (k === "raw") r.enabled = v !== "" && v === (r.kind === "amd" ? "1" : "0")
+    }
+    r.available = r.kind === "intel" || r.kind === "amd"
+    return r
+}
+
+function turboPath(kind) {
+    return kind === "amd"
+        ? "/sys/devices/system/cpu/cpufreq/boost"
+        : "/sys/devices/system/cpu/intel_pstate/no_turbo"
+}
+
+// `tee` rather than a shell redirect so pkexec has one exact program for a
+// polkit rule to match (see README), and so a cancelled prompt is a clean
+// non-zero exit the panel can revert on.
+function turboSetCommand(kind, on) {
+    var val = kind === "amd" ? (on ? "1" : "0") : (on ? "0" : "1")
+    return ["sh", "-c", 'printf %s "$1" | pkexec tee "$2" > /dev/null', "sh", val, turboPath(kind)]
+}
+
+// ============================================================
+// Services
+// ============================================================
+// The three daemons this panel's controls depend on. A stopped asusd is the
+// usual reason a slider silently does nothing, so their state is worth showing
+// next to the controls that rely on them. LoadState separates "installed but
+// stopped" from "not installed at all", which `is-active` alone cannot do — it
+// reports "inactive" for both.
+// `pkg` is the package that ships the unit and `source` picks the adder, in
+// Omarchy's own vocabulary: Omarchy's installer uses `omarchy-pkg-add asusctl`
+// for ROG hardware, while supergfxctl is AUR-only there. `nvidia` marks a unit
+// that is only worth offering on a machine reporting an NVIDIA dGPU.
+var serviceUnits = [
+    { id: "asusd", unit: "asusd.service", pkg: "asusctl", source: "repo",
+      tip: "Owns every asusctl write — profiles, armoury, aura, fan curves.\nIf this is not running, most controls in this panel do nothing." },
+    { id: "supergfxd", unit: "supergfxd.service", pkg: "supergfxctl", source: "aur",
+      tip: "supergfxctl's graphics-switching daemon.\nOnly needed if you switch GPU modes with supergfxctl rather than asusctl." },
+    { id: "nvidiaPowerd", unit: "nvidia-powerd.service", pkg: "nvidia-utils", source: "repo", nvidia: true,
+      tip: "NVIDIA dynamic boost and runtime D3 power management.\nLeave it running unless it misbehaves on your card." }
+]
+
+function serviceUnit(id) {
+    for (var i = 0; i < serviceUnits.length; i++) {
+        if (serviceUnits[i].id === id) return serviceUnits[i]
+    }
+    return null
+}
+
+function serviceStatusCommand() {
+    var script = 'for u in ' + serviceUnits.map(function(s) { return s.unit }).join(" ") + '; do ' +
+        'printf "%s load=%s active=%s\\n" "$u" ' +
+        '"$(systemctl show -p LoadState --value "$u" 2>/dev/null)" ' +
+        '"$(systemctl is-active "$u" 2>/dev/null)"; done'
+    return ["sh", "-c", script]
+}
+
+function parseServiceStatus(raw) {
+    var out = {}
+    var lines = String(raw || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+        var m = lines[i].trim().match(/^(\S+) load=(\S*) active=(\S*)$/)
+        if (!m) continue
+        for (var j = 0; j < serviceUnits.length; j++) {
+            if (serviceUnits[j].unit !== m[1]) continue
+            out[serviceUnits[j].id] = { load: m[2], active: m[3] }
+        }
+    }
+    // Every unit gets an entry, so the panel can tell "not read yet" (undefined)
+    // from "read, and not installed" (load = not-found) without a second flag.
+    for (var k = 0; k < serviceUnits.length; k++) {
+        if (!out[serviceUnits[k].id]) out[serviceUnits[k].id] = { load: "", active: "" }
+    }
+    return out
+}
+
+function servicePresent(state) { return !!state && state.load !== "" && state.load !== "not-found" }
+function serviceActive(state) { return !!state && state.active === "active" }
+
+function serviceStateLabel(state) {
+    if (!servicePresent(state)) return "not installed"
+    if (state.active === "active") return "running"
+    if (state.active === "failed") return "failed"
+    if (state.active === "activating" || state.active === "deactivating") return state.active
+    return "stopped"
+}
+
+function serviceStateColor(state) {
+    if (!servicePresent(state)) return "#888888"
+    if (state.active === "active") return "#44cc66"
+    if (state.active === "failed") return "#ff4444"
+    return "#cc9944"
+}
+
+// enable/disable --now does both halves of the change in one pkexec prompt.
+function nvidiaPowerdSetCommand(on) {
+    return ["pkexec", "systemctl", on ? "enable" : "disable", "--now", "nvidia-powerd.service"]
+}
+
+// "Not installed" specifically — the unit file is absent, as opposed to a probe
+// that has not answered yet (load = "").
+function serviceMissing(state) { return !!state && state.load === "not-found" }
+
+// An install is only offered when the unit is genuinely absent and we know what
+// ships it; the panel additionally filters out the NVIDIA unit on a machine that
+// reports no NVIDIA dGPU.
+function serviceInstallable(unit, state) { return !!unit && !!unit.pkg && serviceMissing(state) }
+
+// The adder for a unit's package. Both Omarchy adders are --needed and both
+// verify the package actually landed.
+function serviceInstallPkgCommand(id) {
+    var u = serviceUnit(id)
+    if (!u || !u.pkg) return ""
+    return (u.source === "aur" ? "omarchy-pkg-aur-add " : "omarchy-pkg-add ") + u.pkg
+}
+
+// Button label, so the panel never spells a package name out itself.
+function serviceInstallLabel(id) {
+    var u = serviceUnit(id)
+    return u && u.pkg ? "Install " + u.pkg : "Install"
+}
+
+// Install the package and enable its unit in one pass, then hold the terminal
+// open with Omarchy's own done prompt so the output stays readable.
+function serviceInstallScript(id) {
+    var u = serviceUnit(id)
+    var add = serviceInstallPkgCommand(id)
+    if (!u || !add) return ""
+    return add + " && sudo systemctl enable --now " + u.unit + "; omarchy-show-done $?"
+}
+
+// Run it through Omarchy's terminal launcher rather than pkexec: pacman has to
+// be able to prompt for sudo, and the user should see what it does.
+function serviceInstallCommand(id) {
+    var script = serviceInstallScript(id)
+    return script ? ["omarchy-launch-tui", "bash", "-c", script] : null
+}
+
+// ============================================================
 // Index helpers
 // ============================================================
 function clampIndex(i, l) { return l <= 0 ? 0 : Math.max(0, Math.min(l - 1, i)) }

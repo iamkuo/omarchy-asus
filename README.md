@@ -56,18 +56,32 @@ that.
   only if `asusctl armoury list` says your laptop exposes it. Note that PPT
   limits are only applied by the firmware while profile tuning is enabled
   (`asusctl profile tuning true`); asusd stores the values either way.
+- **CPU boost** (Advanced) — a Turbo Boost on/off switch, the one thermal lever
+  `asusctl` does not expose: it writes `intel_pstate/no_turbo` on Intel and
+  `cpufreq/boost` on AMD, plus a per-mode plan (Quiet/Balanced/Performance) that
+  applies when you switch modes, the way G-Helper stores it. Both files are
+  root-owned, so the switch needs the one-time [polkit rule](#privileges);
+  without it you get a password prompt per change, and cancelling leaves the
+  setting alone and says so. The section hides itself on a laptop that exposes
+  neither file.
+- **Services** (Advanced) — `asusd`, `supergfxd` and `nvidia-powerd` with their
+  current state, since a stopped daemon is the usual reason a control in this
+  panel does nothing. `nvidia-powerd` also gets an enable/disable switch, shown
+  only where the unit is actually installed, and a unit that is not installed at
+  all gets an Install button that adds its package and enables it
+  ([details](#installing-missing-daemons)).
 - **Bar icon** — scroll over it to cycle performance modes without opening the
   panel.
 
 ### G-Helper parity
 
 This mirrors [G-Helper](https://github.com/seerge/g-helper)'s layout and
-feature set where Linux tooling allows it. What is deliberately absent:
+feature set where Linux tooling allows it. Where it does not:
 
 | G-Helper feature | Status here |
 |---|---|
 | Anime Matrix / Slash display | Not implemented (no such hardware to test against) |
-| CPU boost toggle | Needs root writes to `intel_pstate`/`cpufreq`; `asusctl` exposes no equivalent |
+| CPU boost toggle | Implemented on Advanced — writes `intel_pstate/no_turbo` (Intel) or `cpufreq/boost` (AMD) through `pkexec`, so it needs the one-time polkit rule in [Privileges](#privileges) |
 | AutoTDP, FPS limiter, overlay | Windows-only mechanisms |
 | Per-key / per-zone RGB | `asusctl` exposes zones only on some models; single-colour effects only for now |
 | Automatic AC/battery profile switching | `asusd` stores separate performance profiles and reapplies them when power changes |
@@ -95,6 +109,49 @@ on the Main tab). Switching to a mode applies that mode's rate, so the screen
 follows the mode. Stored as `refreshQuiet`/`refreshBalanced`/`refreshPerformance`
 (`Auto`, or one of the Hz values the internal panel offers). Since plug/unplug
 just switches the mode, it applies that mode's rate too.
+
+### CPU boost per mode
+
+Each performance mode also carries its own CPU boost setting, the way G-Helper
+stores it (**CPU BOOST** on the Advanced tab). Switching to a mode applies that
+mode's setting, so boost follows the mode — including when the switch comes from
+plugging or unplugging the charger, or from scrolling the bar icon. Stored as
+`boostQuiet`/`boostBalanced`/`boostPerformance` (`Auto`, `On`, `Off`); `Auto`
+leaves boost as it is, so a mode that does not care about boost never fights the
+toggle above it.
+
+The flag has to be read before it can be written, since the CPU vendor decides
+both the path and the polarity (`no_turbo` is inverted against `cpufreq/boost`),
+so a mode switch made from the bar with the panel closed parks that mode and
+applies it as soon as the first probe lands.
+
+### Installing missing daemons
+
+A unit that is genuinely not installed — as opposed to one that is installed but
+stopped, or a probe that has not answered yet — gets an **Install** button next to
+its state. The button opens a terminal through Omarchy's own
+`omarchy-launch-tui` and runs:
+
+| Unit | Package | What runs |
+|---|---|---|
+| `asusd.service` | `asusctl` | `omarchy-pkg-add asusctl && sudo systemctl enable --now asusd.service` |
+| `supergfxd.service` | `supergfxctl` | `omarchy-pkg-aur-add supergfxctl && sudo systemctl enable --now supergfxd.service` |
+| `nvidia-powerd.service` | `nvidia-utils` | `omarchy-pkg-add nvidia-utils && sudo systemctl enable --now nvidia-powerd.service` |
+
+`asusctl` is what Omarchy's own installer adds for ROG hardware, so it goes
+through the repo adder; `supergfxctl` is AUR-only there and goes through yay. The
+terminal stays open with Omarchy's done prompt so the result is readable, and the
+panel picks the new state up on its next refresh.
+
+The NVIDIA row is only offered on a laptop whose firmware reports the NVIDIA
+attributes this panel already reads (`nv_temp_target` / `nv_dynamic_boost`), since
+that package is the driver itself and there is no reason to pull it onto an
+AMD-only machine.
+
+None of this goes through `pkexec`: pacman has to prompt for your password
+itself, and you should see what it does. If the terminal cannot be opened at all
+(no `omarchy-launch-tui`), the panel says so and prints the command to run by
+hand.
 
 ### Screen refresh rate
 
@@ -171,6 +228,62 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 | `refreshQuiet` | string | `Auto` | Refresh rate to apply when switching to Quiet (`Auto`, or a Hz value the internal panel offers) |
 | `refreshBalanced` | string | `Auto` | Refresh rate to apply when switching to Balanced |
 | `refreshPerformance` | string | `Auto` | Refresh rate to apply when switching to Performance |
+| `boostQuiet` | enum | `Auto` | CPU boost to apply when switching to Quiet (`Auto`, `On`, `Off`) |
+| `boostBalanced` | enum | `Auto` | CPU boost to apply when switching to Balanced |
+| `boostPerformance` | enum | `Auto` | CPU boost to apply when switching to Performance |
+
+## Privileges
+
+Everything in this plugin works without root except the CPU boost switch and the
+`nvidia-powerd` toggle, and both are optional: without any of the rules below the
+plugin still works, you just authenticate per change, and a cancelled prompt
+leaves the setting untouched and reports it.
+
+**CPU boost.** `intel_pstate/no_turbo` and `cpufreq/boost` are root-owned and
+`asusctl` has no equivalent, so the switch runs `pkexec tee <path>`. To avoid a
+prompt on every click, scope a rule to exactly those two paths:
+
+```bash
+sudo tee /etc/polkit-1/rules.d/60-asus-turbo.rules > /dev/null <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/bin/tee" &&
+        /intel_pstate\/no_turbo|cpufreq\/boost/.test(action.lookup("command_line")) &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+```
+
+Change the group (`wheel`, `sudo`, …) to match your system.
+
+**nvidia-powerd.** The switch runs
+`pkexec systemctl enable|disable --now nvidia-powerd.service`, which needs two
+separate systemd polkit actions — and only the first of them can be scoped to a
+single unit:
+
+```bash
+sudo tee /etc/polkit-1/rules.d/61-asus-powerd.rules > /dev/null <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "nvidia-powerd.service" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+```
+
+That rule covers the start/stop half. The enable/disable half needs
+`org.freedesktop.systemd1.manage-unit-files`, which systemd does not pass a unit
+name to (see [systemd#38992](https://github.com/systemd/systemd/issues/38992)),
+so a rule for it would grant the group the right to enable or disable *any*
+unit. This plugin deliberately does not ask you to grant that, which means the
+switch still shows one prompt per change — answer it, or if you want
+`nvidia-powerd` off for good, run
+`sudo systemctl disable --now nvidia-powerd.service` once and leave the switch
+alone.
 
 ## Compatibility
 
@@ -191,6 +304,12 @@ systemctl status asusd
 # Check what your model supports
 asusctl info --show-supported
 asusctl armoury list
+
+# Check the daemons the panel's controls depend on (also shown on Advanced)
+systemctl is-active asusd supergfxd nvidia-powerd
+
+# Check the boost switch the CPU boost row drives
+cat /sys/devices/system/cpu/intel_pstate/no_turbo   # or cpufreq/boost on AMD
 ```
 
 ## License

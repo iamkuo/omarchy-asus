@@ -207,6 +207,31 @@ Panel {
     property bool asusctlAvailable: false
     property bool cursorActive: false
 
+    // CPU boost switch — sysfs, not asusctl, so it is read on the panel's own
+    // tick like everything else. `kind` is "intel", "amd" or "none"; "none"
+    // hides the control, since a machine with neither file has no switch.
+    property var turbo: ({ kind: "none", enabled: false, available: false })
+    // Distinguishes "not probed yet" from "probed, no switch here" — without it a
+    // mode switch on a laptop with no boost file would re-probe forever.
+    property bool turboLoaded: false
+    // A mode switch can happen from the bar with the panel closed, before the
+    // first probe has landed. The mode is parked here and applied when it does.
+    property string pendingBoostMode: ""
+    // Services the panel's controls depend on: asusd, supergfxd, nvidia-powerd.
+    // One systemctl round trip fills all three (see serviceStatusCommand).
+    property var services: ({})
+    // Last failed write. Actions are applied optimistically and reverted when the
+    // command fails, which is the one outcome re-reading state cannot explain.
+    property string actionError: ""
+    readonly property var nvidiaPowerd: root.services.nvidiaPowerd || ({ load: "", active: "" })
+    readonly property bool nvidiaPowerdPresent: Model.servicePresent(root.nvidiaPowerd)
+    readonly property bool nvidiaPowerdActive: Model.serviceActive(root.nvidiaPowerd)
+    // nvidia-powerd ships with the driver package, so offering to install it only
+    // makes sense where the firmware reports the NVIDIA attributes this panel
+    // already reads. On an AMD-only laptop the offer would be noise, and acting
+    // on it would pull a driver nobody asked for.
+    readonly property bool nvidiaDgpu: !!(root.armourySupported.nvTempTarget || root.armourySupported.nvDynBoost)
+
     // Live sensors — refreshed on a faster tick than the asusctl state, since
     // temps and fan speeds are the numbers you actually watch move.
     property var sensors: ({ cpuTemp: -1, gpuTemp: -1, gpuPower: -1, gpuUtil: -1, gpuRuntime: "", fanCpu: -1, fanGpu: -1, batPct: -1, batStatus: "", batPower: -1 })
@@ -347,16 +372,64 @@ Panel {
         if (!monitorProc.running) monitorProc.running = true
         if (hyprmoncfgAvailable && !hyprmoncfgProc.running) hyprmoncfgProc.running = true
         if (supported.hasFanCurve) { if (!fanDetailProc.running) fanDetailProc.running = true }
+        if (!turboProc.running) turboProc.running = true
+        if (!serviceProc.running) serviceProc.running = true
     }
 
-    // Switching mode also applies that mode's own default refresh rate.
+    // Switching mode also applies that mode's own refresh rate and boost plan.
     function setProfile(p) {
         if (!p || actionProc.running) return
         actionProc.command = Model.profileCommand(p, UPower.onBattery)
         actionProc.running = true
         applyProfileRefresh(p)
+        applyProfileBoost(p)
     }
     function cycleProfile(d) { profileIndex = Model.selectProfileIndex(profileIndex, d, profiles); setProfile(profiles[profileIndex]) }
+
+    // CPU boost. asusctl has no equivalent and the sysfs flag is root-owned, so
+    // the switch is applied optimistically and put back if pkexec was cancelled
+    // (exit 126/127) or the write failed — see turboWriteProc.
+    function setTurbo(on) {
+        if (!root.turbo.available || turboWriteProc.running || on === root.turbo.enabled) return
+        turboWriteProc.prevEnabled = root.turbo.enabled
+        root.turbo = { kind: root.turbo.kind, enabled: on, available: true }
+        turboWriteProc.command = Model.turboSetCommand(root.turbo.kind, on)
+        turboWriteProc.running = true
+    }
+    function toggleTurbo() { setTurbo(!root.turbo.enabled) }
+
+    // The map is rebuilt rather than mutated so the bindings that read
+    // root.services re-evaluate.
+    function setServiceActive(id, active) {
+        var next = {}
+        for (var k in root.services) next[k] = root.services[k]
+        var cur = root.services[id] || ({ load: "loaded", active: "" })
+        next[id] = { load: cur.load, active: active }
+        root.services = next
+    }
+    function toggleNvidiaPowerd() {
+        if (!root.nvidiaPowerdPresent || powerdWriteProc.running) return
+        var on = !root.nvidiaPowerdActive
+        powerdWriteProc.prevActive = root.nvidiaPowerdActive
+        setServiceActive("nvidiaPowerd", on ? "active" : "inactive")
+        powerdWriteProc.command = Model.nvidiaPowerdSetCommand(on)
+        powerdWriteProc.running = true
+    }
+
+    // A missing unit is the one state a button can fix outright. The install runs
+    // in Omarchy's own terminal so pacman can prompt for sudo and show what it
+    // does, which means this Process only reports whether the terminal opened —
+    // the result of the install itself shows up on the next refresh.
+    function installService(id) {
+        var cmd = Model.serviceInstallCommand(id)
+        if (!cmd || installProc.running) return
+        installProc.pkgCommand = Model.serviceInstallPkgCommand(id)
+        installProc.command = cmd
+        installProc.running = true
+    }
+
+    // Failed writes get a line of their own, cleared after a few seconds.
+    function showActionError(msg) { root.actionError = msg; errorClearTimer.restart() }
 
     function applyEffect() {
         if (!supported.hasAura) return
@@ -486,6 +559,36 @@ Panel {
         persistProc.command = ["omarchy", "bar", "set", moduleName, "refresh" + root.profileKeyFor(name), String(value)]
         persistProc.running = true
         if (name === root.currentProfile && String(value) !== "Auto" && root.monitor) setRefreshRate(Number(value))
+    }
+
+    // Each performance mode also carries its own CPU boost setting, the way
+    // G-Helper stores it per mode, applied when the mode is switched to. Stored
+    // as boostQuiet/boostBalanced/boostPerformance in shell.json. "Auto" leaves
+    // whatever is set now alone, so a mode that does not care about boost never
+    // fights the toggle above.
+    function profileBoostFor(name) { return String(setting("boost" + root.profileKeyFor(name), "Auto")) }
+    function applyProfileBoost(name) {
+        var want = root.profileBoostFor(name)
+        if (want === "Auto") { root.pendingBoostMode = ""; return }
+        // The switch has to be read before it can be written (kind decides the
+        // path and the polarity). If the probe has not landed yet — a mode
+        // switch from the bar with the panel closed — park the mode and apply it
+        // when it does; on a laptop with no boost file the parked mode is
+        // dropped instead of re-probing forever.
+        if (!root.turboLoaded) {
+            root.pendingBoostMode = name
+            if (!turboProc.running) turboProc.running = true
+            return
+        }
+        if (!root.turbo.available) return
+        setTurbo(want === "On")
+    }
+    function setProfileBoost(name, value) {
+        persistProc.command = ["omarchy", "bar", "set", moduleName, "boost" + root.profileKeyFor(name), String(value)]
+        persistProc.running = true
+        // Editing the plan for the mode in use applies it straight away; the
+        // others take effect when you switch to them.
+        if (name === root.currentProfile) applyProfileBoost(name)
     }
 
     // Fan curves — every write is gated on profileLoaded so an action never
@@ -632,6 +735,19 @@ Panel {
                 }
 
                 PanelSeparator { foreground: root.bar.foreground }
+
+                // Last failed write (see showActionError). Above the tab bodies
+                // so it shows whichever tab produced it, and clears itself.
+                Text {
+                    visible: root.actionError !== ""
+                    width: parent.width
+                    text: root.actionError
+                    wrapMode: Text.WordWrap
+                    color: "#ff8844"
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                }
 
                 // Tab bodies are plain always-built Columns toggled by `visible`
                 // rather than Loader/Component — Quickshell's incubator can take
@@ -1143,7 +1259,7 @@ Panel {
                 // ======================================================== ADVANCED TAB
                 Column { visible: root.tabKey === "advanced"; width: parent.width; spacing: Style.space(8)
                     Row { width: parent.width
-                        Text { width: parent.width - defaultsBtn.width - Style.space(8); text: "Firmware power limits. Only the controls this laptop actually reports are shown."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                        Text { width: parent.width - defaultsBtn.width - Style.space(8); text: "Firmware power limits, CPU boost, and the daemons behind them. Only the controls this laptop actually reports are shown."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                         Button { id: defaultsBtn; text: "Defaults"; tooltipText: "Put every power limit below back to the value\nthe firmware reports as its default."; fontSize: Style.font.caption; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; horizontalPadding: Style.spacing.controlPaddingX; verticalPadding: Style.spacing.controlPaddingY; bordered: true; anchors.verticalCenter: parent.verticalCenter; onClicked: root.restorePowerDefaults() }
                     }
                     Column { visible: root.armourySupported.pptPl1 || root.armourySupported.pptPl2 || root.armourySupported.pptPl3; width: parent.width; spacing: Style.space(4)
@@ -1190,6 +1306,140 @@ Panel {
                             }
                             PanelSlider { width: parent.width - Style.space(40) - Style.space(32) - Style.space(4) * 2; bar: root.bar; minimum: root.nvTempTargetMin; maximum: root.nvTempTargetMax; step: 1; integer: true; value: root.nvTempTarget; onReleased: function(v) { root.setNvTempTarget(v) } }
                             Text { text: root.nvTempTarget + "°C"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(32); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                    }
+                    // CPU BOOST — a sysfs flag rather than a firmware attribute,
+                    // so it sits outside the "Defaults" group above, and it is
+                    // hidden entirely on a machine with no boost switch.
+                    Column { visible: root.turbo.available; width: parent.width; spacing: Style.space(6)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "CPU BOOST"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Toggle {
+                            id: turboToggle
+                            width: parent.width
+                            label: "Turbo Boost"
+                            description: root.turbo.enabled ? "On — the CPU may clock above its base frequency" : "Off — the CPU is capped at its base frequency"
+                            checked: root.turbo.enabled
+                            foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
+                            onClicked: root.toggleTurbo()
+                            property bool tipHovered: false
+                            onHovered: function(h) { turboToggle.tipHovered = h }
+                            PanelToolTip { visible: turboToggle.tipHovered; text: "asusctl exposes no boost switch, so this writes " + Model.turboPath(root.turbo.kind) + "\nthrough pkexec. Turning it off lowers peak and sustained\ntemperatures at the cost of burst performance.\nNeeds the polkit rule from the README, otherwise the prompt\nis cancelled and nothing changes." }
+                        }
+                        // BOOST PER MODE — G-Helper stores CPU boost per
+                        // performance mode and applies it on the switch, so each
+                        // mode gets its own choice here. Auto leaves the current
+                        // state alone, so a mode that does not care about boost
+                        // never fights the toggle above.
+                        Column { width: parent.width; spacing: Style.space(6)
+                            Text { width: parent.width; text: "Each performance mode carries its own boost setting, applied when you switch to that mode. Auto leaves boost as it is."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                            Repeater {
+                                model: root.profiles
+                                Column {
+                                    id: boostBlock
+                                    required property var modelData
+                                    width: parent.width; spacing: Style.space(3)
+                                    Text { text: String(boostBlock.modelData) + (root.currentProfile === boostBlock.modelData ? " •" : ""); color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                                    Row { id: boostRow; width: parent.width; spacing: Style.space(4)
+                                        readonly property real cw: (width - spacing * 2) / 3
+                                        Repeater {
+                                            model: ["Auto", "On", "Off"]
+                                            Button {
+                                                required property string modelData
+                                                width: boostRow.cw
+                                                text: modelData
+                                                tooltipText: modelData === "Auto"
+                                                    ? "Leave boost as it is when switching to " + String(boostBlock.modelData) + "."
+                                                    : "Turn CPU boost " + modelData.toLowerCase() + " when you switch to " + String(boostBlock.modelData) + "."
+                                                fontSize: Style.font.caption
+                                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                                horizontalPadding: Style.spacing.controlPaddingX
+                                                verticalPadding: Style.spacing.controlPaddingY
+                                                bordered: true
+                                                active: root.profileBoostFor(String(boostBlock.modelData)) === modelData
+                                                onClicked: root.setProfileBoost(String(boostBlock.modelData), modelData)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // SERVICES — the daemons these controls depend on. A stopped
+                    // asusd is the usual reason a control in this panel does
+                    // nothing, so their state sits with the controls rather than
+                    // on Main.
+                    Column { visible: root.services.asusd !== undefined; width: parent.width; spacing: Style.space(4)
+                        PanelSeparator { foreground: root.bar.foreground }
+                        PanelSectionHeader { text: "SERVICES"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+                        Repeater {
+                            // asusd and supergfxd are read-only here; nvidia-powerd
+                            // gets a switch instead (below), so it is left out. A unit
+                            // that is not installed gets an install button, which is
+                            // the one state a button can fix outright.
+                            model: Model.serviceUnits.slice(0, 2)
+                            Row {
+                                id: svcRow
+                                required property var modelData
+                                readonly property var state: root.services[svcRow.modelData.id]
+                                readonly property bool installable: Model.serviceInstallable(svcRow.modelData, svcRow.state)
+                                width: parent.width; spacing: Style.space(6)
+                                Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(svcRow.state) }
+                                Text { text: svcRow.modelData.id; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                                Text { text: Model.serviceStateLabel(svcRow.state); color: Model.serviceStateColor(svcRow.state); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                                MouseArea { id: svcHelp; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                                PanelToolTip { visible: svcHelp.containsMouse; text: svcRow.modelData.tip }
+                                // Declared after the row's hover catcher so the click
+                                // lands on the button, not on the tooltip area.
+                                Button {
+                                    visible: svcRow.installable
+                                    text: Model.serviceInstallLabel(svcRow.modelData.id)
+                                    tooltipText: "Installs " + svcRow.modelData.pkg + " and enables " + svcRow.modelData.unit + ".\nOpens a terminal so pacman can ask for your password, and\nleaves it open with the result when it is done."
+                                    fontSize: Style.font.caption
+                                    foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                    horizontalPadding: Style.spacing.controlPaddingX
+                                    verticalPadding: Style.spacing.controlPaddingY
+                                    bordered: true
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    onClicked: root.installService(svcRow.modelData.id)
+                                }
+                            }
+                        }
+                        Toggle {
+                            id: powerdToggle
+                            visible: root.nvidiaPowerdPresent
+                            width: parent.width
+                            label: "nvidia-powerd"
+                            description: root.nvidiaPowerdActive ? "Running — dynamic boost and runtime D3 available" : "Stopped — enable to allow dynamic boost and runtime D3"
+                            checked: root.nvidiaPowerdActive
+                            foreground: root.bar.foreground; accent: Color.accent; fontFamily: root.bar.fontFamily
+                            onClicked: root.toggleNvidiaPowerd()
+                            property bool tipHovered: false
+                            onHovered: function(h) { powerdToggle.tipHovered = h }
+                            PanelToolTip { visible: powerdToggle.tipHovered; text: Model.serviceUnits[2].tip + "\nEnables or disables the unit through pkexec systemctl." }
+                        }
+                        // nvidia-powerd only gets the switch once its unit exists, so
+                        // a laptop without the driver package is offered the install
+                        // here instead — and only when the firmware reports NVIDIA
+                        // hardware, since the package is the driver itself.
+                        Row {
+                            id: powerdInstallRow
+                            visible: root.nvidiaDgpu && Model.serviceMissing(root.services.nvidiaPowerd)
+                            width: parent.width; spacing: Style.space(6)
+                            Rectangle { width: Style.space(8); height: Style.space(8); radius: Style.space(4); anchors.verticalCenter: parent.verticalCenter; color: Model.serviceStateColor(root.services.nvidiaPowerd) }
+                            Text { text: "nvidia-powerd"; width: Style.space(90); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: Model.serviceStateLabel(root.services.nvidiaPowerd); color: Model.serviceStateColor(root.services.nvidiaPowerd); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            Button {
+                                text: Model.serviceInstallLabel("nvidiaPowerd")
+                                tooltipText: "nvidia-powerd ships inside the NVIDIA driver package, so this installs\nnvidia-utils and enables the unit. Offered only because this laptop\nreports NVIDIA hardware."
+                                fontSize: Style.font.caption
+                                foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+                                horizontalPadding: Style.spacing.controlPaddingX
+                                verticalPadding: Style.spacing.controlPaddingY
+                                bordered: true
+                                anchors.verticalCenter: parent.verticalCenter
+                                onClicked: root.installService("nvidiaPowerd")
+                            }
                         }
                     }
                 }
@@ -1312,7 +1562,53 @@ Panel {
     }
     Process { id: hyprmoncfgSaveProc; onExited: function() { if (!monitorProc.running) monitorProc.running = true } }
     Process { id: sensorProc; command: Model.sensorCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.sensors = Model.parseSensors(text); if (root.oneshotPlan && root.sensors.batPct >= root.oneshotPlan.target) root.stopOneshot() } } }
-    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true } }
+    // CPU boost switch — sysfs, so it is probed separately from asusctl.
+    Process { id: turboProc; command: Model.turboCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: {
+        root.turbo = Model.parseTurbo(text)
+        root.turboLoaded = true
+        // A mode switch that arrived before this first read (bar scroll with the
+        // panel closed) is applied now that the kind and polarity are known.
+        if (root.pendingBoostMode !== "") { var m = root.pendingBoostMode; root.pendingBoostMode = ""; root.applyProfileBoost(m) }
+    } } }
+    // Optimistic write: a cancelled pkexec prompt (126/127) or any other failure
+    // puts the old value back and says why. On success the next refresh confirms
+    // the new one.
+    Process {
+        id: turboWriteProc
+        property bool prevEnabled: false
+        onExited: function(ec) {
+            if (ec === 0) { if (!turboProc.running) turboProc.running = true; return }
+            root.turbo = { kind: root.turbo.kind, enabled: prevEnabled, available: true }
+            root.showActionError(ec === 126 || ec === 127
+                ? "Turbo Boost: authorisation cancelled (or pkexec missing) — nothing changed. See the README for the polkit rule."
+                : "Turbo Boost: write to " + Model.turboPath(root.turbo.kind) + " failed (exit " + ec + ").")
+        }
+    }
+    Process { id: serviceProc; command: Model.serviceStatusCommand(); stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.services = Model.parseServiceStatus(text) } } }
+    Process {
+        id: powerdWriteProc
+        property bool prevActive: false
+        onExited: function(ec) {
+            if (ec === 0) { if (!serviceProc.running) serviceProc.running = true; return }
+            root.setServiceActive("nvidiaPowerd", prevActive ? "active" : "inactive")
+            root.showActionError(ec === 126 || ec === 127
+                ? "nvidia-powerd: authorisation cancelled — nothing changed."
+                : "nvidia-powerd: systemctl failed (exit " + ec + ").")
+        }
+    }
+    Timer { id: errorClearTimer; interval: 8000; onTriggered: root.actionError = "" }
+    // Launching the install terminal. A non-zero exit here means the launcher
+    // itself failed (no omarchy-launch-tui, no terminal), so the manual command is
+    // what the user needs to see.
+    Process {
+        id: installProc
+        property string pkgCommand: ""
+        onExited: function(ec) {
+            if (ec === 0) return
+            root.showActionError("Could not open a terminal for the install — run \"" + installProc.pkgCommand + "\" yourself.")
+        }
+    }
+    Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true; if (!turboProc.running) turboProc.running = true; if (!serviceProc.running) serviceProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
 
     // Sensors run on their own, faster tick — the asusctl round-trip is much
