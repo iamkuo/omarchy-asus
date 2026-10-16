@@ -63,7 +63,7 @@ that.
   `asusctl` does not expose: it writes `intel_pstate/no_turbo` on Intel and
   `cpufreq/boost` on AMD, plus a per-mode plan (Quiet/Balanced/Performance) that
   applies when you switch modes, the way G-Helper stores it. Both files are
-  root-owned, so the switch needs the one-time [polkit rule](#privileges);
+  root-owned, so the switch needs the one-time [polkit rule](#privileges-stop-the-password-prompts);
   without it you get a password prompt per change, and cancelling leaves the
   setting alone and says so. The section hides itself on a laptop that exposes
   neither file.
@@ -85,7 +85,7 @@ feature set where Linux tooling allows it. Where it does not:
 | G-Helper feature | Status here |
 |---|---|
 | Anime Matrix / Slash display | Not implemented (no such hardware to test against) |
-| CPU boost toggle | Implemented on Advanced — writes `intel_pstate/no_turbo` (Intel) or `cpufreq/boost` (AMD) through `pkexec`, so it needs the one-time polkit rule in [Privileges](#privileges) |
+| CPU boost toggle | Implemented on Advanced — writes `intel_pstate/no_turbo` (Intel) or `cpufreq/boost` (AMD) through `pkexec`, so it needs the one-time polkit rule in [Privileges](#privileges-stop-the-password-prompts) |
 | AutoTDP, FPS limiter, overlay | Windows-only mechanisms |
 | Per-key / per-zone RGB | `asusctl` exposes zones only on some models; single-colour effects only for now |
 | Automatic AC/battery profile switching | `asusd` stores separate performance profiles and reapplies them when power changes |
@@ -148,7 +148,7 @@ sets the system-wide value, written as drop-ins
 hibernates).
 
 Both the global and per-plan controls need root, so add the polkit rule in
-[Privileges](#privileges) or you will authenticate on each change. Under the
+[Privileges](#privileges-stop-the-password-prompts) or you will authenticate on each change. Under the
 dropdown, a plan's lid action can also be `Auto` (use the global value); its
 hibernate slider `Auto` likewise uses the global. Switching plans only rewrites
 the drop-in when the resolved values actually change.
@@ -260,12 +260,12 @@ After editing the plugin's own files, rebuild the panel:
 omarchy restart shell
 ```
 
-### 3. Allow the root-needing controls without a password (optional)
+### 3. Stop the password prompts (optional)
 
-Two controls need root: the **Turbo Boost** switch
-(`intel_pstate/no_turbo` / `cpufreq/boost`) and the **Lid action /
-auto-hibernate** drop-ins. Both work without this, prompting per change; add
-the rules in [Privileges](#privileges) to make them prompt-free.
+Two controls need root — the **Turbo Boost** switch and the **Lid action /
+auto-hibernate** drop-ins — so out of the box each change pops a password
+prompt. To make them prompt-free, run the two-rule copy-paste block in
+[Privileges](#privileges-stop-the-password-prompts). Nothing else needs root.
 
 ### 4. Stop nvidia-powerd getting stuck (optional, NVIDIA only)
 
@@ -317,16 +317,30 @@ block in `~/.config/omarchy/shell.json`, which Omarchy drops with the plugin.
 | `boostBalanced` | enum | `Auto` | CPU boost to apply when switching to Balanced |
 | `boostPerformance` | enum | `Auto` | CPU boost to apply when switching to Performance |
 
-## Privileges
+## Privileges (stop the password prompts)
 
-Everything in this plugin works without root except the CPU boost switch, and
-that is optional: without the rule below the plugin still works, you just
-authenticate per change, and a cancelled prompt leaves the setting untouched and
-reports it.
+Only **two** controls in this plugin need root, so they pop a password prompt by
+default:
 
-**CPU boost.** `intel_pstate/no_turbo` and `cpufreq/boost` are root-owned and
-`asusctl` has no equivalent, so the switch runs `pkexec tee <path>`. To avoid a
-prompt on every click, scope a rule to exactly those two paths:
+| Control | What the plugin runs as root |
+|---|---|
+| **Turbo Boost** (Advanced → CPU Boost) | `pkexec tee /sys/…/intel_pstate/no_turbo` or `…/cpufreq/boost` |
+| **Lid action / Auto hibernate** (Advanced) | `pkexec sh -c …` writing two systemd drop-ins and reloading logind |
+
+Everything else works without root. The two polkit rules below allow **only
+those exact commands**, for the members of one group, so the plugin never
+prompts. They are optional: without them the plugin still works, it just asks
+for your password each time, and a cancelled prompt changes nothing (it tells
+you so in the panel).
+
+> **Which group?** The rules use `subject.isInGroup("wheel")`. On Arch/Omarchy
+> that is the admin group; confirm with `groups`, and if your admin group is
+> named differently, replace `wheel` in both files.
+
+### Add both rules
+
+Copy and paste this whole block into a terminal (it writes two files under
+`/etc/polkit-1/rules.d/`):
 
 ```bash
 sudo tee /etc/polkit-1/rules.d/60-asus-turbo.rules > /dev/null <<'EOF'
@@ -339,15 +353,7 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-```
 
-Change the group (`wheel`, `sudo`, …) to match your system.
-
-**Lid action / auto-hibernate.** Those controls write the two drop-ins and
-reload logind through `pkexec sh -c …`, so they prompt per change by default.
-Scope a rule to just those files:
-
-```bash
 sudo tee /etc/polkit-1/rules.d/60-asus-lid.rules > /dev/null <<'EOF'
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
@@ -359,7 +365,30 @@ polkit.addRule(function(action, subject) {
 EOF
 ```
 
-Change the group to match your system.
+That is all — polkit re-reads `rules.d` automatically, so there is nothing to
+restart.
+
+### Check it worked
+
+Neither of these should ask for a password now:
+
+```bash
+# CPU boost — writes the value it already has, so it changes nothing:
+printf 1 | pkexec tee /sys/devices/system/cpu/cpufreq/boost   # Intel: intel_pstate/no_turbo
+
+# Lid / hibernation — removes the drop-in if present and reloads logind:
+pkexec sh -c 'rm -f /etc/systemd/logind.conf.d/50-asus-lid.conf; systemctl kill -s HUP systemd-logind'
+```
+
+Toggling **Turbo Boost** and changing **Lid action** in the panel should also be
+prompt-free. If either still asks, the group name in the files does not match
+yours (`groups`).
+
+### Remove
+
+```bash
+sudo rm /etc/polkit-1/rules.d/60-asus-turbo.rules /etc/polkit-1/rules.d/60-asus-lid.rules
+```
 
 ## Compatibility
 
