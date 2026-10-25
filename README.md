@@ -106,6 +106,20 @@ stored as the `defaultProfileAc` and `defaultProfileBattery` plugin settings
 profile in charge. Plug/unplug sets only the mode — it has no refresh setting
 of its own.
 
+The panel also follows mode changes it did not make. `power-profiles-daemon`
+(Omarchy's power menu, `powerprofilesctl set …`), asusd's own AC/battery
+switch, and a plain `asusctl profile set` are noticed within 10 seconds: the
+bar icon and the plan editor move to the new mode, and that mode's plan
+settings (refresh rate, firmware limits, lid/hibernate) are replayed. CPU
+boost is left alone: `power-profiles-daemon` owns the same flag, and this
+kernel rejects the restore path it uses once another writer changes boost, so
+a follow would break the next power-profile switch. The panel's boost toggle
+still controls it.
+
+The panel does not write the stored AC/battery mode itself, so the program that
+changed the mode keeps ownership until you pick one in the panel. The follow
+poll is one `asusctl profile get` and only runs while the panel is loaded.
+
 ### Power plans
 
 On the Advanced tab, **Auto-switch on power** maps each source to a mode, and

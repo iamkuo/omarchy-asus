@@ -521,6 +521,10 @@ Panel {
 
     readonly property bool showBatteryLimit: setting("showBatteryLimit", true) === true
     readonly property int refreshInterval: Math.max(5, Math.min(60, Number(setting("refreshIntervalSec", 10)) || 10)) * 1000
+    // How often to look for a mode change made outside the panel. This is one
+    // asusctl round-trip; the heavier refresh() stays tied to the panel being
+    // open. 10 s keeps the bar icon honest without waking asusd needlessly.
+    readonly property int followInterval: 10000
     // Optional plugin-side default profile per power source, applied when the
     // charger is plugged or unplugged. "Auto" leaves the choice to the profile
     // asusd already has saved for that source.
@@ -546,8 +550,13 @@ Panel {
     }
 
     // Switching mode also applies that mode's own refresh rate and boost plan.
+    // The mode is set optimistically so the read-back in profileProc cannot
+    // mistake our own switch for an external one (see followProfile).
     function setProfile(p) {
         if (!p || actionProc.running) return
+        var i = root.profiles.indexOf(p)
+        if (i >= 0) root.profileIndex = i
+        root.currentProfile = p
         // Mode plus any per-plan firmware limits in one call, so the limits land
         // right after the profile that owns them.
         actionProc.command = ["sh", "-c", Model.profileCommand(p, UPower.onBattery).join(" ") + root.planLimitsCommand(p)]
@@ -557,6 +566,27 @@ Panel {
         applyLid(p)
     }
     function cycleProfile(d) { profileIndex = Model.selectProfileIndex(profileIndex, d, profiles); setProfile(profiles[profileIndex]) }
+
+    // asusd's AC/battery switch, power-profiles-daemon and plain
+    // `asusctl profile set` all change the active mode behind the panel's back.
+    // Follow the new mode instead of fighting it: the mode itself is already
+    // active, so only replay the per-plan settings this panel owns. The stored
+    // AC/battery mode is deliberately left alone — the external actor owns it
+    // until the user picks a mode here.
+    function followProfile(p) {
+        if (!p || !root.profileLoaded) return
+        // CPU boost is deliberately not replayed here: power-profiles-daemon
+        // owns the same flag, and this kernel rejects the policy*/boost restore
+        // path PPD uses once another writer changed it, which makes the next PPD
+        // profile switch fail. The panel's boost toggle still controls it.
+        root.applyProfileRefresh(p)
+        root.applyLid(p)
+        var limits = root.planLimitsCommand(p)
+        if (limits !== "" && !followLimitsProc.running) {
+            followLimitsProc.command = ["sh", "-c", "true" + limits]
+            followLimitsProc.running = true
+        }
+    }
 
     // CPU boost. asusctl has no equivalent and the sysfs flag is root-owned, so
     // the switch is applied optimistically and put back if pkexec was cancelled
@@ -1574,7 +1604,7 @@ Panel {
                     Column { visible: root.supported.hasProfile; width: parent.width; spacing: Style.space(6)
                         PanelSeparator { foreground: root.bar.foreground }
                         PanelSectionHeader { text: "POWER PLAN"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
-                        Text { width: parent.width; text: "Pick a plan to edit everything it carries. The settings apply when you switch to that plan."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+                        Text { width: parent.width; text: "Pick a plan to edit everything it carries. The settings apply when you switch to that plan, and follow a mode that something else changes."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                         FlipDropdown {
                             id: planDropdown
                             viewport: flick
@@ -1792,7 +1822,30 @@ Panel {
         }
     }
     Process { id: checkAsusctl; command: ["which", "asusctl"]; onExited: function(ec) { root.asusctlAvailable = ec === 0; if (root.asusctlAvailable) refresh() } }
-    Process { id: profileProc; command: ["asusctl", "profile", "get"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { var p = Model.parseCurrentProfile(text); if (p) { root.currentProfile = p; var i = root.profiles.indexOf(p); if (i >= 0) root.profileIndex = i }; root.acProfile = Model.parseProfiles(text); root.profileLoaded = true } } }
+    // Single reader for the active mode. Anything the panel did not set itself
+    // (see setProfile's optimistic update) is treated as an external change and
+    // handed to followProfile.
+    Process {
+        id: profileProc; command: ["asusctl", "profile", "get"]
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                // A panel-initiated switch is still in flight; actionProc's exit
+                // handler re-reads once asusd has actually applied the new mode.
+                if (actionProc.running) return
+                var p = Model.parseCurrentProfile(text)
+                var external = root.profileLoaded && p && p !== root.currentProfile
+                if (p) {
+                    root.currentProfile = p
+                    var i = root.profiles.indexOf(p)
+                    if (i >= 0) root.profileIndex = i
+                }
+                root.acProfile = Model.parseProfiles(text)
+                root.profileLoaded = true
+                if (external) root.followProfile(p)
+            }
+        }
+    }
     Process { id: infoProc; command: ["asusctl", "info", "--show-supported"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.supported = Model.parseSupportedFeatures(text); root.initAuraPowerState(root.supported.auraPowerZones || []); root.infoLoaded = true } } }
     Process { id: batteryProc; command: ["asusctl", "battery", "info"]; stdout: StdioCollector { waitForEnd: true; onStreamFinished: { root.batteryLimit = Model.parseBatteryInfo(text).limit } } }
     // Persisted one-shot plan, read once at startup so a pending "charge to X"
@@ -1919,7 +1972,19 @@ Panel {
         }
     }
     Process { id: actionProc; onExited: function() { if (!profileProc.running) profileProc.running = true; if (!batteryProc.running) batteryProc.running = true; if (!ledProc.running) ledProc.running = true; if (!armouryProc.running) armouryProc.running = true; if (!monitorProc.running) monitorProc.running = true; if (!fanDetailProc.running) fanDetailProc.running = true; if (!turboProc.running) turboProc.running = true; if (!serviceProc.running) serviceProc.running = true } }
+    // Replays a followed plan's firmware limits. Kept separate from actionProc
+    // so an external mode change never queues behind a panel action.
+    Process { id: followLimitsProc; onExited: function() { if (!armouryProc.running) armouryProc.running = true } }
     Timer { interval: root.refreshInterval; running: root.opened && root.asusctlAvailable; repeat: true; onTriggered: root.refresh() }
+    // Follow mode changes made elsewhere (power-profiles-daemon, asusd's own
+    // AC/battery switch, plain `asusctl profile set`). Only the lightweight
+    // profile read runs here; profileProc decides whether to replay the plan.
+    Timer {
+        interval: root.followInterval
+        running: root.asusctlAvailable
+        repeat: true
+        onTriggered: if (!profileProc.running) profileProc.running = true
+    }
 
     // Sensors run on their own, faster tick — the asusctl round-trip is much
     // heavier and its values barely move. Backs off while the panel is closed,
