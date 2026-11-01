@@ -826,9 +826,9 @@ Panel {
     // override it (Auto = use the global). Applied as systemd drop-ins through
     // pkexec (see Model.lidApplyCommand), so it needs the polkit rule in the
     // README. Skipped when the resolved values are already in effect.
-    function globalLidValue() { return String(setting("lidAction", "suspend")) }
+    function globalLidValue() { return Model.normalizeLidAction(setting("lidAction", "suspend")) }
     function globalHibValue() { return String(setting("hibernateDelay", "auto")) }
-    function lidFor(name) { return String(setting("lid" + root.profileKeyFor(name), "auto")) }
+    function lidFor(name) { return Model.normalizeLidAction(setting("lid" + root.profileKeyFor(name), "auto")) }
     function hibFor(name) { return String(setting("hib" + root.profileKeyFor(name), "auto")) }
     function effectiveLid(name) { var v = root.lidFor(name); return v !== "auto" ? v : root.globalLidValue() }
     function effectiveHib(name) { var v = root.hibFor(name); return v !== "auto" ? v : root.globalHibValue() }
@@ -1595,6 +1595,7 @@ Panel {
                                 PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(globalHibRow.state); onReleased: function(v) { root.setHibDelay(root.hibValueFromSlider(v)) } }
                                 Text { text: root.hibValueLabel(globalHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                             }
+                            Text { visible: root.globalLidValue() !== "suspend-then-hibernate"; width: parent.width; text: "Ignored by the selected lid action — only “Suspend then hibernate” waits before hibernating."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                         }
                     }
                     // POWER PLAN — one place to edit everything a single mode
@@ -1730,6 +1731,7 @@ Panel {
                                 PanelSlider { width: parent.width - Style.space(40) - Style.space(56) - Style.space(4) * 2; bar: root.bar; minimum: 15; maximum: 180; step: 15; integer: true; value: root.hibValueMinutes(planHibRow.state); onReleased: function(v) { root.setPlanHib(root.plan, root.hibValueFromSlider(v)) } }
                                 Text { text: root.hibValueLabel(planHibRow.state); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; width: Style.space(56); horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                             }
+                            Text { visible: root.effectiveLid(root.plan) !== "suspend-then-hibernate"; width: parent.width; text: "Ignored by this plan's lid action — only “Suspend then hibernate” waits before hibernating."; wrapMode: Text.WordWrap; color: Qt.darker(root.bar.foreground, 1.4); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                         }
                     }
                     // SERVICES — the daemons these controls depend on. A stopped

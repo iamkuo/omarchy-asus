@@ -311,7 +311,12 @@ assert.equal(M.serviceInstallScript("asusd").indexOf("omarchy-launch-tui"), -1, 
 // ---------------------------------------------------------------- lid/hibernate
 assert.deepEqual(M.lidActions.slice(0, 3), ["auto", "suspend", "suspend-then-hibernate"])
 // The global control has no "auto" (Suspend is systemd's default).
-assert.deepEqual(M.lidActionsGlobal, ["suspend", "suspend-then-hibernate", "hibernate", "lock", "ignore", "poweroff"])
+assert.deepEqual(M.lidActionsGlobal, ["suspend", "suspend-then-hibernate", "lock", "ignore", "poweroff"])
+// Immediate hibernate is not offered: interrupting it aborts S4 and can wedge
+// the GPU. A settings file that still says "hibernate" resolves to the safe one.
+assert.equal(M.lidActions.indexOf("hibernate"), -1)
+assert.equal(M.normalizeLidAction("hibernate"), "suspend-then-hibernate")
+assert.equal(M.normalizeLidAction("suspend"), "suspend")
 assert.equal(M.lidActionLabel("ignore"), "Do nothing")
 assert.equal(M.lidActionLabel("bogus"), "Auto")
 assert.equal(M.hibernateDelayLabel("60min"), "1h")

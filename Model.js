@@ -839,18 +839,25 @@ function serviceInstallCommand(id) {
 // when the action is suspend-then-hibernate). Both are written as drop-ins so
 // Omarchy's own logind.conf stays untouched. "auto" removes the drop-in, which
 // leaves systemd's own default in charge.
-var lidActions = ["auto", "suspend", "suspend-then-hibernate", "hibernate", "lock", "ignore", "poweroff"]
+// Plain "Hibernate" is deliberately absent: hibernating the moment the lid
+// closes leaves a ~1 minute window where opening the lid aborts S4, which can
+// wedge the GPU and take the session down with it. "Suspend then hibernate" is
+// the safe way to hibernate; a stored "hibernate" resolves to it below.
+var lidActions = ["auto", "suspend", "suspend-then-hibernate", "lock", "ignore", "poweroff"]
 // The global control has no "auto": the system always resolves to a concrete
 // lid action (Suspend is systemd's default), so "auto" there would be a no-op.
 var lidActionsGlobal = lidActions.filter(function(a) { return a !== "auto" })
 var lidActionLabels = {
     "auto": "Auto", "suspend": "Suspend", "suspend-then-hibernate": "Suspend then hibernate",
-    "hibernate": "Hibernate", "lock": "Lock", "ignore": "Do nothing", "poweroff": "Power off"
+    "lock": "Lock", "ignore": "Do nothing", "poweroff": "Power off"
 }
 var hibernateDelays = ["auto", "15min", "30min", "60min", "120min"]
 var hibernateDelayLabels = { "auto": "Auto", "15min": "15m", "30min": "30m", "60min": "1h", "120min": "2h" }
 
 function lidActionLabel(id) { return lidActionLabels[id] || lidActionLabels["auto"] }
+// Keep a settings file written before "Hibernate" was removed usable: resolve
+// it to the action that actually waits before hibernating.
+function normalizeLidAction(id) { return String(id) === "hibernate" ? "suspend-then-hibernate" : String(id) }
 function hibernateDelayLabel(id) { return hibernateDelayLabels[id] || hibernateDelayLabels["auto"] }
 
 function lidApplyCommand(lid, hibernate) {

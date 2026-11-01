@@ -155,11 +155,17 @@ sets the system-wide value, written as drop-ins
 (`/etc/systemd/logind.conf.d/50-asus-lid.conf` and
 `/etc/systemd/sleep.conf.d/50-asus-hibernate.conf`) followed by a logind reload
 — Omarchy's own config is left untouched. The global lid action is
-`Suspend` (systemd's default), `Suspend then hibernate`, `Hibernate`, `Lock`,
+`Suspend` (systemd's default), `Suspend then hibernate`, `Lock`,
 `Do nothing` or `Power off`; the delay is a slider (`Auto` = leave it unset,
 15–165 minutes, or the right-most position **Never**, which writes
 `HibernateDelaySec=infinity` so a suspend-then-hibernate lid action never
 hibernates).
+
+Plain `Hibernate` is not offered on purpose. Hibernating the moment the lid
+closes takes about a minute to write the image, and opening the lid during that
+window makes the kernel abort S4 ("Wakeup event detected during hibernation,
+rolling back"), which can wedge the GPU and kill the session. Use `Suspend then
+hibernate`; a settings file that still stores `hibernate` resolves to it.
 
 Both the global and per-plan controls need root, so add the polkit rule in
 [Privileges](#privileges-stop-the-password-prompts) or you will authenticate on each change. Under the
